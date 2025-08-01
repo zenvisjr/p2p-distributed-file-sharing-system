@@ -104,10 +104,11 @@ int main(int argc, char *argv[])
     // cout<<IP<<endl;
     // cout<<PORT<<endl;
     // int port = stoi(PORT);
+
     //creating a new thread for listening for new connection from another clients
-    thread clientAsServerThread(DownloadHandler, IP, PORT);
-    clientAsServerThread.detach();
-    sleep(0.7);
+    // thread clientAsServerThread(DownloadHandler, IP, PORT);
+    // clientAsServerThread.detach();
+    sleep(1);
 
     //moving forward with our main logic
 
@@ -157,7 +158,7 @@ int main(int argc, char *argv[])
 
     // cout<<IPAddress<<endl;
     // cout<<portNumber<<endl;
-    // Create a new socket on clinet side
+    // Create a new socket on client side
     int domain = AF_INET;
     int type = SOCK_STREAM;
     int protocol = 0;
@@ -211,6 +212,11 @@ int main(int argc, char *argv[])
         // }
 
         //extracting command and its arguments and storing it in arguments
+        if(command.empty()) continue;
+        {
+            cout<<"Command cannot be empty"<<endl;
+            continue;
+        }
         vector<string> arguments = ExtractArguments(command);
 
         // if(command.substr(0, 11) == "login")
@@ -263,8 +269,8 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-
 vector<string> ExtractArguments(string& str) 
+
 {
     vector<string> arguments;
     string temp;
@@ -437,9 +443,10 @@ void checkAppendSendRecieve(vector<string>& arg, string& command, string ip, str
         if(arg.size() != 2)
         {
             cout<<"USAGE: create_group <group_id>"<<endl;
+            return;
         }
-        else
-        {
+
+
             // command = arg[0];
             if (send(clientSocket, command.c_str(), command.length(), 0) == -1) 
             {
@@ -456,8 +463,6 @@ void checkAppendSendRecieve(vector<string>& arg, string& command, string ip, str
             bufferRecv[bytesRecieved] = '\0'; 
             string recvAck(bufferRecv, bytesRecieved);
             cout<<recvAck<<endl;
-
-        }
     }
     else if(arg[0] == "join_group")
     {

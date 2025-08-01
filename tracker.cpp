@@ -487,7 +487,7 @@ void ListAllGroups(User* &currentThreadUser, int clientSocket, int check)
     }
 }
 
-    void ListPendingRequest(string groupID, User* &currentThreadUser, int clientSocket, int check)
+void ListPendingRequest(string groupID, User* &currentThreadUser, int clientSocket, int check)
     {
         string response;
         Group *currentGroup = groupMap[groupID]; 

@@ -1,0 +1,59 @@
+Here’s a clean and complete documentation section you can add to your `README.md` under **Features** or **Phase 2 – Data Integrity Verification**:
+
+---
+
+## ✅ Phase 2: Chunk-Level and Final File Hash Verification
+
+This phase ensures **end-to-end data integrity** during P2P file transfers by verifying the file both chunk-by-chunk and as a whole.
+
+### 🔐 Features Implemented
+
+**1. Chunk Hashing and Verification**
+
+* Each file is divided into chunks (buffered blocks).
+* The **sender calculates a SHA1 hash** for each chunk and sends it immediately after the chunk.
+* The **receiver recalculates the SHA1 hash** and verifies it with the sender’s hash.
+* Any mismatch triggers a warning for **possible corruption**.
+
+**2. Final File Hash Check**
+
+* After the transfer is complete, both sides compute a **final SHA1 hash**:
+
+  * Sender: concatenates all chunk hashes and hashes them again.
+  * Receiver: does the same independently.
+* This final hash is exchanged and compared to ensure **complete file integrity**.
+
+**3. Byte-Level Transfer Tracking**
+
+* Total bytes sent and received are logged.
+* Helps detect partial downloads or unexpected disconnections.
+
+---
+
+### 🛠️ Example Logs (Receiver)
+
+```log
+DOWNLOAD STARTED...
+✔️ Chunk 1 hash verified.
+✔️ Chunk 2 hash verified.
+✔️ Chunk 3 hash verified.
+...
+✅ Final file hash verified — file integrity intact.
+✅ File is downloaded and stored at: /downloads/sample.txt
+```
+
+---
+
+### 📦 Why It Matters
+
+This system defends against:
+
+* Partial file transfers
+* Silent corruption over socket
+* Malicious peer modification
+
+It’s a lightweight alternative to full cryptographic signatures and prepares the codebase for future **peer authentication**.
+
+---
+
+Let me know when you’re ready to document Phase 3 features after we implement them.
