@@ -20,7 +20,7 @@
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
 
 using namespace std;
-#define BUFFERSIZE 512
+#define BUFFERSIZE 512*1024 // 512 KB buffer size for file transfer
 #define MAX_CONNECTION 50
 
 class FileMetadata
@@ -46,8 +46,10 @@ vector<string> tokenizePeers(string &str);
 vector<string> tokenizeVector(string &str);
 vector<string> ExtractArguments(string &str);
 
-void RecieveFile(int clientSocket, string destinationPath, string fileName);
-void DownloadFromClient(int clientPort, string dpath, string fname);
+void RecieveFile(int clientSocket, string destinationPath, string fileName,
+                 const vector<string> &chunkHashes, const string &expectedCompleteHash);
+void DownloadFromClient(int clientPort, string destinationPath, string fileName,
+                        const vector<string> &chunkHashes, const string &expectedCompleteHash);
 void ShareToClient(int listeningSocket);
 void SendFile(int socket, string fpath, string fname);
 void DownloadHandler(string clientIP, string clientPort);
@@ -57,6 +59,8 @@ void handleUploadReq(int peerSocket);
 
 bool isValidIdentifier(const string &str);
 bool isStrongPassword(const string &password);
+
+bool sendAll(int socket, const char *data, size_t totalBytes);
 
 int main(int argc, char *argv[])
 {
@@ -68,23 +72,23 @@ int main(int argc, char *argv[])
 
     // extracting IP and port number of client passed as 2nd argument
     string socketInfo = argv[1];
-    string IP, PORT;
+    string cLientIP, clientPort;
     for (int i = 0; i < socketInfo.size(); i++)
     {
         if (socketInfo[i] == ':')
         {
-            PORT = socketInfo.substr(i + 1);
+            clientPort = socketInfo.substr(i + 1);
             break;
         }
 
-        IP += socketInfo[i];
+        cLientIP += socketInfo[i];
     }
     // cout<<IP<<endl;
     // cout<<PORT<<endl;
     // int port = stoi(PORT);
 
     // creating a new thread for listening for new connection from another clients
-    thread clientAsServerThread(DownloadHandler, IP, PORT);
+    thread clientAsServerThread(DownloadHandler, cLientIP, clientPort);
     clientAsServerThread.detach();
     sleep(1);
 
@@ -121,18 +125,16 @@ int main(int argc, char *argv[])
     // cout<<extract<<endl;
 
     // extracting IP and port of tracker
-    string IPAddress, portNum;
+    string trackerIP, trackerPort;
     for (int i = 0; i < extract.size(); i++)
     {
         if (extract[i] == ':')
         {
-            portNum = extract.substr(i + 1);
+            trackerPort = extract.substr(i + 1);
             break;
         }
-        IPAddress += extract[i];
+        trackerIP += extract[i];
     }
-
-    int portNumber = atoi(portNum.c_str());
 
     // cout<<IPAddress<<endl;
     // cout<<portNumber<<endl;
@@ -156,10 +158,12 @@ int main(int argc, char *argv[])
     }
 
     // Define the server's address structure
+    int trackerPortNumber = atoi(trackerPort.c_str());
+
     sockaddr_in serverAddress;
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(portNumber);
-    inet_pton(AF_INET, IPAddress.c_str(), &serverAddress.sin_addr); // Convert IP address to byte form
+    serverAddress.sin_port = htons(trackerPortNumber);
+    inet_pton(AF_INET, trackerIP.c_str(), &serverAddress.sin_addr); // Convert IP address to byte form
 
     // Connect to the server
     int connectFD = connect(clientSocket, (struct sockaddr *)&serverAddress, sizeof(serverAddress));
@@ -170,7 +174,35 @@ int main(int argc, char *argv[])
     }
     else
     {
-        cout << "Client is connected with tracker on " << IPAddress << ":" << portNumber << endl;
+        cout << "Client is connected with tracker on " << trackerIP << ":" << trackerPortNumber << endl;
+    }
+    if (clientPort == "6001")
+    {
+        vector<string> arguments;
+        string command;
+        command = "create_user alice password";
+        arguments = ExtractArguments(command);
+        checkAppendSendRecieve(arguments, command, cLientIP, clientPort, clientSocket);
+        command = "login alice password";
+        arguments = ExtractArguments(command);
+        checkAppendSendRecieve(arguments, command, cLientIP, clientPort, clientSocket);
+        command = "create_group g1";
+        arguments = ExtractArguments(command);
+        checkAppendSendRecieve(arguments, command, cLientIP, clientPort, clientSocket);
+    }
+    else if (clientPort == "6002")
+    {
+        vector<string> arguments;
+        string command;
+        command = "create_user bob password";
+        arguments = ExtractArguments(command);
+        checkAppendSendRecieve(arguments, command, cLientIP, clientPort, clientSocket);
+        command = "login bob password";
+        arguments = ExtractArguments(command);
+        checkAppendSendRecieve(arguments, command, cLientIP, clientPort, clientSocket);
+        command = "join_group g1";
+        arguments = ExtractArguments(command);
+        checkAppendSendRecieve(arguments, command, cLientIP, clientPort, clientSocket);
     }
 
     while (true)
@@ -185,7 +217,7 @@ int main(int argc, char *argv[])
             continue;
         }
         vector<string> arguments = ExtractArguments(command);
-        checkAppendSendRecieve(arguments, command, IP, PORT, clientSocket);
+        checkAppendSendRecieve(arguments, command, cLientIP, clientPort, clientSocket);
     }
 
     close(clientSocket);
@@ -214,11 +246,11 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip, str
             cout << "Error: Invalid user_id. Only [a-zA-Z0-9_.-] allowed, max 20 characters." << endl;
             return;
         }
-        if (!isStrongPassword(password))
-        {
-            cout << "Error: Password must be at least 8 characters long, contain uppercase, lowercase, digit, and special character." << endl;
-            return;
-        }
+        // if (!isStrongPassword(password))
+        // {
+        //     cout << "Error: Password must be at least 8 characters long, contain uppercase, lowercase, digit, and special character." << endl;
+        //     return;
+        // }
         if (send(clientSocket, command.c_str(), command.length(), 0) == -1)
         {
             perror("there was a error in sending command to server");
@@ -257,11 +289,11 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip, str
             cout << "Error: Invalid user_id. Only [a-zA-Z0-9_.-] allowed, max 20 characters." << endl;
             return;
         }
-        if (!isStrongPassword(password))
-        {
-            cout << "Error: Password must be at least 8 characters long, contain uppercase, lowercase, digit, and special character." << endl;
-            return;
-        }
+        // if (!isStrongPassword(password))
+        // {
+        //     cout << "Error: Password must be at least 8 characters long, contain uppercase, lowercase, digit, and special character." << endl;
+        //     return;
+        // }
 
         command = arg[0] + " " + arg[1] + " " + arg[2] + " " + ip + " " + port;
         if (send(clientSocket, command.c_str(), command.length(), 0) == -1)
@@ -565,13 +597,16 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip, str
         FindFileMetadata(filePath, command);
 
         // command = arg[0];
-        if (send(clientSocket, command.c_str(), command.length(), 0) == -1)
+        cout << "file metadata prepared for upload: " << command << endl;
+        size_t len = command.size();
+        string header = "@LARGE@";
+        send(clientSocket, header.c_str(), header.size(), 0);
+        send(clientSocket, &len, sizeof(len), 0);
+        if (!sendAll(clientSocket, command.c_str(), command.length()))
         {
-            perror("there was a error in sending command to server");
+            perror("Failed to send full metadata to tracker");
             return;
         }
-
-        // char bufferRecv[512];
         int bytesRecieved = recv(clientSocket, bufferRecv, sizeof(bufferRecv) - 1, 0);
         if (bytesRecieved < 0)
         {
@@ -700,44 +735,97 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip, str
             return;
         }
 
-        // char bufferRecv[512];
-        int bytesRecieved = recv(clientSocket, bufferRecv, sizeof(bufferRecv) - 1, 0);
-        if (bytesRecieved < 0)
+        // Step 1: Receive size
+        int metadataLen;
+        int n = recv(clientSocket, &metadataLen, sizeof(int), 0);
+        if (n <= 0)
         {
-            perror("unable to recieve data from tracker");
+            perror("Error receiving metadata length");
+            return;
         }
-        bufferRecv[bytesRecieved] = '\0';
-        // cout << "Received " << bytesRecieved << " bytes: " << bufferRecv << endl;
-        string recvAck(bufferRecv, bytesRecieved);
+        cout << "Metadata size to receive: " << metadataLen << " bytes" << endl;
 
-        if (recvAck[0] != '#')
-            cout << recvAck << endl;
-        else
+        // Step 2: Receive full metadata in chunks
+        string recvAck;
+        int totalReceived = 0;
+        while (totalReceived < metadataLen)
         {
-            vector<string> peersWithFile = tokenizeVector(recvAck);
-            cout << "Peers list:" << endl;
-            // print(peersWithFile);
-            print(peersWithFile);
-
-            // actual download start from here
-            for (int i = 1; i < peersWithFile.size(); i = i + 2)
+            char buffer[512];
+            int bytes = recv(clientSocket, buffer, min(512, metadataLen - totalReceived), 0);
+            if (bytes <= 0)
             {
-                int clientPort = stoi(peersWithFile[i]);
-                // cout<<clientPort<<endl;
-                string clientID = peersWithFile[i - 1];
-                // cout<<clientID<<endl;
-                string fname = arg[2];
-                // cout<<fname<<endl;
-
-                cout << "Downloading from peer : " << clientID << endl;
-                DownloadFromClient(clientPort, destinationPath, fname);
-                string response = "DownloadCompleteSuccessfully";
-                if (send(clientSocket, response.c_str(), strlen(response.c_str()), 0) < 0)
-                {
-                    perror("Error in sending download status to tracker");
-                }
-                break;
+                perror("Error receiving metadata content");
+                return;
             }
+            recvAck.append(buffer, bytes);
+            totalReceived += bytes;
+        }
+        // cout << "Received " << bytesRecieved << " bytes: " << bufferRecv << endl;
+        // recvAck(bufferRecv, totalReceived);
+
+        vector<string> tokens = tokenizeVector(recvAck);
+
+        cout << "Received metadata: " << recvAck << endl;
+        // vector<string> tokens;
+        // stringstream ss(recvAck);
+        string word;
+        // while (ss >> word)
+        //     tokens.push_back(word);
+        print(tokens);
+
+        cout << "1st token: " << tokens[0] << endl;
+        // Checking if the first token is "OK"
+
+        if (tokens[0] != "OK")
+        {
+            cout << "Error: " << tokens[0] << endl;
+            cout << recvAck << endl;
+            cout << "File not found or you do not have permission to download it." << endl;
+            return; // If the response is not OK, exit the function
+        }
+
+        cout << "File metadata received successfully." << endl;
+
+        // Extracting file metadata from the response
+        int fileSize = stoi(tokens[1]);
+        int noOfChunks = stoi(tokens[2]);
+        string completeFileHash = tokens[3];
+        cout << "File Size: " << fileSize << endl;
+        cout << "No of Chunks: " << noOfChunks << endl;
+
+        vector<string> chunkHashes;
+        for (int i = 4; i < 4 + noOfChunks; ++i)
+        {
+            chunkHashes.push_back(tokens[i]);
+            cout << "Chunk " << i - 4 << " Hash: " << tokens[i] << endl;
+        }
+
+        vector<pair<string, int>> peers;
+        for (int i = 4 + noOfChunks; i < tokens.size(); i += 2)
+        {
+            string peerID = tokens[i];
+            int peerPort = stoi(tokens[i + 1]);
+            peers.push_back({peerID, peerPort});
+            cout << "Peer ID: " << peerID << ", Port: " << peerPort << endl;
+        }
+
+        cout << "Peers with file:" << endl;
+        for (auto &p : peers)
+            cout << p.first << " : " << p.second << endl;
+
+        // Download from first peer for now (we'll improve this later with rarest-first)
+        string fname = arg[2];
+        // string destinationPath = arg[3];
+        cout << "Downloading from peer: " << peers[0].first << endl;
+
+        DownloadFromClient(peers[0].second, destinationPath, fname, chunkHashes, completeFileHash); // You need to update this function to verify each chunk using `chunkHashes`
+
+        string response = "DownloadCompleteSuccessfully";
+        send(clientSocket, response.c_str(), strlen(response.c_str()), 0);
+        if (send(clientSocket, response.c_str(), strlen(response.c_str()), 0) < 0)
+        {
+            perror("Error in sending download status to tracker");
+            return;
         }
     }
     else if (arg[0] == "show_downloads")
@@ -802,9 +890,12 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip, str
     }
 }
 
-void DownloadFromClient(int clientPort, string dpath, string fname)
+void DownloadFromClient(int clientPort, string destinationPath, string fileName,
+                        const vector<string> &chunkHashes, const string &expectedCompleteHash)
+
 {
-    // cout<<"Download from Client"<<endl;
+
+    cout << "Download from Client" << endl;
 
     // Create a new socket on client side
     // int domain = AF_INET;
@@ -847,16 +938,23 @@ void DownloadFromClient(int clientPort, string dpath, string fname)
     }
 
     // updated send to handle failure
-    if (send(clientSocket, fname.c_str(), fname.size(), 0) == -1)
+    // Send request to peer for file
+    string request = fileName;
+
+    if (send(clientSocket, request.c_str(), request.size(), 0))
     {
-        perror("Failed to send filename to peer");
+        cout << "Request sent to peer for file: " << fileName << endl;
+    }
+    else
+    {
+        perror("Failed to send request to peer");
         shutdown(clientSocket, SHUT_RDWR); // Disables read/write on socket
         close(clientSocket);               // Releases file descriptor
         return;
     }
 
     // cout<<"hyyyyyyy"<<endl;
-    RecieveFile(clientSocket, dpath, fname);
+    RecieveFile(clientSocket, destinationPath, fileName, chunkHashes, expectedCompleteHash);
     // cout<<"sending response back to tracker"<<endl;
     string response = "DownloadCompleteSuccessfully";
     if (send(clientSocket, response.c_str(), response.size(), 0) == -1)
@@ -870,7 +968,8 @@ void DownloadFromClient(int clientPort, string dpath, string fname)
 }
 
 // Function to receive data from the client
-void RecieveFile(int clientSocket, string destinationPath, string fileName)
+void RecieveFile(int clientSocket, string destinationPath, string fileName,
+                 const vector<string> &chunkHashes, const string &expectedCompleteHash)
 {
     string fullPath = destinationPath + "/" + fileName;
 
@@ -883,6 +982,7 @@ void RecieveFile(int clientSocket, string destinationPath, string fileName)
 
     long long totalFileSize = 0;
     int bytesRead = recv(clientSocket, &totalFileSize, sizeof(totalFileSize), 0);
+    cout << "Total file size to receive: " << totalFileSize << " bytes" << endl;
     if (bytesRead != sizeof(totalFileSize))
     {
         perror("Failed to receive total file size");
@@ -891,46 +991,49 @@ void RecieveFile(int clientSocket, string destinationPath, string fileName)
     }
 
     unsigned char buffer[BUFFERSIZE];
-    int Count = 0;
-    string finalHash = "";
+    string combinedChunkHashes;
     long long totalReceived = 0;
+    int chunkIndex = 0;
 
     cout << "DOWNLOAD STARTED..." << endl;
 
     while (totalReceived < totalFileSize)
     {
         int bytesToRead = min(BUFFERSIZE, static_cast<int>(totalFileSize - totalReceived));
-        int bytesReceived = recv(clientSocket, buffer, bytesToRead, 0);
-        if (bytesReceived <= 0)
+        int bytesReceived = 0;
+
+        // 🛠️ Receive exactly bytesToRead in a loop
+        while (bytesReceived < bytesToRead)
         {
-            perror("Error receiving file data or connection closed prematurely");
-            close(fd);
-            return;
+            int r = recv(clientSocket, buffer + bytesReceived, bytesToRead - bytesReceived, 0);
+            if (r <= 0)
+            {
+                perror("Failed to receive data from sender");
+                close(fd);
+                return;
+            }
+            bytesReceived += r;
         }
 
-        // 🔐 [Phase 2] Receive sender's SHA1 hash (20 bytes)
-        char recvHash[21] = {0}; // one extra for null-termination (not used)
-        int hashBytes = recv(clientSocket, recvHash, 20, 0);
-        if (hashBytes != 20)
-        {
-            perror("Failed to receive SHA1 hash from sender");
-            close(fd);
-            return;
-        }
-
-        // Compute hash locally
+        // ✅ Hash verification
         string localHash = calculateSHA1Hash(buffer, bytesReceived);
-        Count++;
-        finalHash += localHash;
-
-        if (strncmp(localHash.c_str(), recvHash, 20) != 0)
+        cout << "Local hash for chunk " << chunkIndex << ": " << localHash << endl;
+        if (chunkIndex >= chunkHashes.size())
         {
-            cerr << "⚠️ SHA1 hash mismatch on chunk " << Count + 1 << endl;
+            cerr << "❌ More chunks received than expected!" << endl;
+            break;
+        }
+        if (localHash != chunkHashes[chunkIndex])
+        {
+            cerr << "❌ Hash mismatch in chunk " << (chunkIndex + 1) << endl;
         }
         else
         {
-            cout << "✔️ Chunk " << Count + 1 << " hash verified." << endl;
+            cout << "✔️ Chunk " << (chunkIndex + 1) << " hash verified." << endl;
         }
+
+        combinedChunkHashes += localHash;
+        chunkIndex++;
 
         if (write(fd, buffer, bytesReceived) == -1)
         {
@@ -943,27 +1046,19 @@ void RecieveFile(int clientSocket, string destinationPath, string fileName)
         cout << "Received " << totalReceived << " bytes out of " << totalFileSize << " bytes." << endl;
     }
 
-    // 🔐 [Phase 2.5] Compute final file hash from all received chunk hashes
-    string localFileHash = calculateSHA1Hash((unsigned char *)finalHash.c_str(), finalHash.size());
+    // ✅ Final SHA1 hash of all chunks
+    vector<unsigned char> concatenatedByteArray = hexStringToByteArray(combinedChunkHashes);
 
-    // Receive sender’s final hash
-    char recvFileHash[21] = {0};
-    int hashBytes = recv(clientSocket, recvFileHash, 20, 0);
-    if (hashBytes != 20)
+    string finalHash = calculateSHA1Hash((concatenatedByteArray.data()), concatenatedByteArray.size());
+    cout << "Final combined hash: " << finalHash << endl;
+    cout << "Expected complete file hash: " << expectedCompleteHash << endl;
+    if (finalHash != expectedCompleteHash)
     {
-        perror("Failed to receive final file hash from sender");
-        close(fd);
-        return;
-    }
-
-    // Compare
-    if (strncmp(localFileHash.c_str(), recvFileHash, 20) != 0)
-    {
-        cerr << "❌ Final file hash mismatch — file may be corrupted!" << endl;
+        cerr << "❌ Final file hash mismatch! File may be corrupted." << endl;
     }
     else
     {
-        cout << "✅ Final file hash verified — file integrity intact." << endl;
+        cout << "✅ Final file hash verified successfully." << endl;
     }
 
     close(fd);
@@ -1116,7 +1211,7 @@ void SendFile(int peerSocket, string fpath, string fname)
     while ((bytesRead = read(fd, buffer, sizeof(buffer))) > 0)
     {
         chunkCount++;
-         // Loop to ensure all bytes are sent (handles partial send)
+        // Loop to ensure all bytes are sent (handles partial send)
         ssize_t totalSent = 0;
         while (totalSent < bytesRead)
         {
@@ -1132,15 +1227,15 @@ void SendFile(int peerSocket, string fpath, string fname)
         totalSizeSend += totalSent;
 
         // 🔐 [Phase 2] Send SHA1 hash right after each chunk
-        string hash = calculateSHA1Hash(buffer, bytesRead);
-        finalHash += hash; // Concatenate the first 10 char of hash of this chunk to the final hash
+        // string hash = calculateSHA1Hash(buffer, bytesRead);
+        // finalHash += hash; // Concatenate the first 10 char of hash of this chunk to the final hash
 
-        if (send(peerSocket, hash.c_str(), hash.size(), 0) == -1)
-        {
-            perror("Failed to send chunk hash to peer");
-            close(fd);
-            return;
-        }
+        // if (send(peerSocket, hash.c_str(), hash.size(), 0) == -1)
+        // {
+        //     perror("Failed to send chunk hash to peer");
+        //     close(fd);
+        //     return;
+        // }
 
         // sleep(1);
     }
@@ -1152,16 +1247,16 @@ void SendFile(int peerSocket, string fpath, string fname)
         perror("error reading file during send");
     }
 
-    string fileHash = calculateSHA1Hash((unsigned char *)finalHash.c_str(), finalHash.size());
+    // string fileHash = calculateSHA1Hash((unsigned char *)finalHash.c_str(), finalHash.size());
 
     // Send it to peer
-    if (send(peerSocket, fileHash.c_str(), fileHash.size(), 0) == -1)
-    {
-        perror("Failed to send final file hash");
-        close(fd);
-        return;
-    }
-    cout << "Final file hash sent to peer: " << fileHash << endl;
+    // if (send(peerSocket, fileHash.c_str(), fileHash.size(), 0) == -1)
+    // {
+    //     perror("Failed to send final file hash");
+    //     close(fd);
+    //     return;
+    // }
+    // cout << "Final file hash sent to peer: " << fileHash << endl;
     close(fd);
     cout << "File is sent to client successfully" << endl;
 
@@ -1170,7 +1265,7 @@ void SendFile(int peerSocket, string fpath, string fname)
     cout << "✅ Sent " << totalSizeSend << " bytes in total." << endl;
     cout << "File transfer complete to requesting peer." << endl;
 
-    // close(peerSocket); // Close the peer socket after sending the file
+    close(peerSocket); // Close the peer socket after sending the file
 }
 
 void FindFileMetadata(string filePath, string &command)
@@ -1211,6 +1306,7 @@ void FindFileMetadata(string filePath, string &command)
     if (fd == -1)
     {
         perror("Unable to open file");
+        close(fd);
         return;
     }
 
@@ -1226,6 +1322,7 @@ void FindFileMetadata(string filePath, string &command)
         if (bytesRead == -1)
         {
             perror("there was a error in reading the data from file");
+            close(fd);
             return;
         }
         string chunkHash = calculateSHA1Hash(buffer, bytesRead);
@@ -1241,15 +1338,25 @@ void FindFileMetadata(string filePath, string &command)
     // using data() gives you a pointer that points to the first element of the array inside the vector
     metadata.HashOfCompleteFile = calculateSHA1Hash(concatenatedByteArray.data(), concatenatedByteArray.size());
 
+    cout << "Hash of complete file while storing: " << metadata.HashOfCompleteFile << endl;
+    
     close(fd);
 
     command += " " + to_string(metadata.fileSize) + " " + metadata.fileName + " " + to_string(metadata.noOfChunks) + " " + metadata.HashOfCompleteFile;
 
+    //[phase 4] appending all chunk hashes to command
+    for (const auto &chunkHash : metadata.hashOfChunks)
+    {
+        cout << "appending chunk hash: " << chunkHash << endl;
+        command += " " + chunkHash;
+    }
     // cout<<command<<endl;
 
     // updating map to store file path for easy search when client ask for that file
     //  cout<<filePath<<endl;
+
     fnameToPath[metadata.fileName] = filePath;
+    cout << "File metadata sent for upload: " << command << endl;
 }
 
 string ConvertToHex(unsigned char c)
@@ -1356,7 +1463,7 @@ vector<string> tokenizeVector(string &str)
     string temp;
     for (auto c : str)
     {
-        if (c == '#')
+        if (c == ' ')
         {
             if (temp.empty() == false)
             {
@@ -1404,7 +1511,7 @@ vector<string> tokenizePeers(string &str)
 
 bool isStrongPassword(const string &password)
 {
-    if (password.length() < 8)
+    if (password.length() < 5)
         return false;
 
     bool hasUpper = false, hasLower = false, hasDigit = false, hasSpecial = false;
@@ -1503,3 +1610,18 @@ bool isStrongPassword(const string &password)
 //         thread(handleUploadReq, peerSocket).detach();
 //     }
 // }
+
+bool sendAll(int socket, const char *data, size_t totalBytes)
+{
+    size_t totalSent = 0;
+    while (totalSent < totalBytes)
+    {
+        ssize_t sent = send(socket, data + totalSent, totalBytes - totalSent, 0);
+        if (sent <= 0)
+        {
+            return false;
+        }
+        totalSent += sent;
+    }
+    return true;
+}

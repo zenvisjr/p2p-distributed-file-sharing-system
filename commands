@@ -1,0 +1,11 @@
+create_user alice password
+login alice password
+create_group g1
+
+create_user bob pass
+login bob pass
+join_group g1
+
+accept_request g1 bob
+upload_file hi.pdf g1
+download_file g1 hi.pdf /home/zenvis/yo
