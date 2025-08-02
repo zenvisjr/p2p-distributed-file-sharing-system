@@ -1,4 +1,0 @@
-yo my name is ayush
-
-
-bug: if a peer is responsible for sending file chunk then when complete file is send and download is complete all te peers that send the file are stuck and do not return to Enter Command
