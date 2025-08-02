@@ -7,14 +7,12 @@
 #include <cstring>
 #include <fcntl.h>       //for open()
 #include <openssl/sha.h> //for hashing
-#include <iomanip>
 #include <arpa/inet.h> // Needed for inet_pton
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
 #include <mutex>
-#include <signal.h>
 
 std::mutex userMutex;      // 🔒 [Phase 3]
 std::mutex groupMutex;     // 🔒 [Phase 3]
@@ -108,6 +106,22 @@ public:
 
 vector<DownloadInfo *> downloads; // Holds the download statuses
 
+
+// 📦 [Piece Selection]
+struct PeerStats {
+  string ip;
+  int port;
+  float score = 1.0; // chunks / time
+  int chunksServed = 0;
+  double totalDownloadTime = 0.0;
+
+  // ✅ Default constructor
+  PeerStats() : ip(""), port(0) {}
+  PeerStats(string i, int p) : ip(i), port(p) {}
+};
+
+unordered_map<string, PeerStats> globalPeerStats; // key = "ip:port"
+
 bool CreateUser(string userID, string password);
 bool LoginUser(string userID, string password, string currentUserIP, string currentUserPort, User *&currentThreadUser);
 bool LogoutUser(User *&currentThreadUser);
@@ -124,38 +138,38 @@ void StopShare(string groupID, string fileName, User *&currentThreadUser, int cl
 void DownloadFile(string groupID, string fileName, string destinationPath, User *&currentThreadUser, int clientSocket, int check);
 void ShowDownloadStatus(User *&currentThreadUser, int clientSocket, int check);
 void QuitTracker(User *currentThreadUser, int clientSocket, int check);
+void updatePeerStatsFromClient(const string &ip, int port, float score,
+                               int served, double time);
+string serializePeerStats(const PeerStats &stats);
+vector<string> tokenizeVector(string &str);
 
-bool CreateUser(string userID, string password)
-{
-    lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
-    // To check if a user exists
-    if (userMap.find(userID) != userMap.end())
-    {
-        // User* existingUser = userMap["john_doe"];
-        cout << "User already exist, try another userID" << endl;
-        return false;
-    }
-    else
-    {
-        // Check for valid userId and password
-        //     if (userId.empty() || password.empty())
-        //     {
-        //         std::cout << "UserID and password cannot be empty" << std::endl;
-        //         return;
-        //     }
-        // }
-        // adding a new user
-        User *newUser = new User(userID, password);
-        userMap[userID] = newUser;
+bool CreateUser(string userID, string password) {
+  lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
+  // To check if a user exists
+  if (userMap.find(userID) != userMap.end()) {
+    // User* existingUser = userMap["john_doe"];
+    cout << "User already exist, try another userID" << endl;
+    return false;
+  } else {
+    // Check for valid userId and password
+    //     if (userId.empty() || password.empty())
+    //     {
+    //         std::cout << "UserID and password cannot be empty" << std::endl;
+    //         return;
+    //     }
+    // }
+    // adding a new user
+    User *newUser = new User(userID, password);
+    userMap[userID] = newUser;
 
-        // User *newUser1 = new User("ayush", "1q2w");
-        // User *newUser2 = new User("naruto", "1q2w");
-        // userMap[userID] = newUser1;
-        // userMap[userID] = newUser2;
-        cout << "New user created with ID : " << userID << endl;
+    // User *newUser1 = new User("ayush", "1q2w");
+    // User *newUser2 = new User("naruto", "1q2w");
+    // userMap[userID] = newUser1;
+    // userMap[userID] = newUser2;
+    cout << "New user created with ID : " << userID << endl;
 
-        return true;
-    }
+    return true;
+  }
 }
 
 bool LoginUser(string userID, string password, string currentUserIP, string currentUserPort, User *&currentThreadUser)
@@ -186,6 +200,12 @@ bool LoginUser(string userID, string password, string currentUserIP, string curr
 
         // VERY IMPORTANT: mapping currentThreadUser to same userID so that we can track user of current client
         currentThreadUser = userMap[userID];
+
+        // replace userID with IP later when sending peer list to client
+        string key = userID + ":" + userMap[userID]->portNumber;
+        if (globalPeerStats.find(key) == globalPeerStats.end()) {
+          globalPeerStats[key] = PeerStats(userID, stoi(userMap[userID]->portNumber));
+        }
 
         cout << userID << " is logged in now" << endl;
         return true;
@@ -880,6 +900,7 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                 response += to_string(meta->fileSize) + " ";
                 response += to_string(meta->noOfChunks) + " ";
                 response += meta->HashOfCompleteFile + " ";
+                
 
                 // Append all chunk hashes
                 for (const string &h : meta->hashOfChunks)
@@ -891,10 +912,17 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
 
                 // if file is found in the group, send all the peers that uploaded that file to the group
                 string peers = "";
-                for (auto p : meta->peersHavingFile)
-                {
-                    cout << p->userID << " " << p->portNumber << endl;
-                    response += " " + p->userID + " " + p->portNumber;
+                for (auto p : meta->peersHavingFile) {
+
+                  //replace userID with IP later
+                  string key = p->userID + ":" + p->portNumber;
+                //   PeerStats peerStats = globalPeerStats[key];
+                  auto it = globalPeerStats.find(key);
+                  if (it != globalPeerStats.end()) {
+                    response += serializePeerStats(it->second) + " ";
+                  }
+                  cout << "peer: " << p->userID << " " << p->portNumber << endl;
+                  //   response += " " + p->userID + " " + p->portNumber;
                 }
                 cout << response << endl;
                 // response = peers;
@@ -912,7 +940,6 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                 int metadataLen = response.size();
                 send(clientSocket, &metadataLen, sizeof(int), 0);
 
-                cout << "Detail of peers and metadata send successfully" << endl;
 
                 // Then send the full metadata
                 int totalSent = 0;
@@ -926,29 +953,91 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                     }
                     totalSent += sent;
                 }
-                // cout << "Full metadata sent successfully" << endl;
+                cout << "Detail of peers and metadata send successfully"
+                     << endl;
+
                 // recieving response from client after file is downloaded successfully
                 char buffer[BUFFERSIZE];
-                int bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0);
-                if (bytesReceived <= 0)
-                {
-                    perror("there was a error in reading the response of download status from client");
+
+                // recieve peer status
+                int lenNet;
+                int received = recv(clientSocket, &lenNet, sizeof(lenNet), 0);
+                if (received != sizeof(lenNet)) {
+                  cerr << "❌ Failed to receive peer stats length" << endl;
+                  return;
+                }
+                cout<<"recieve peer stats length: "<<lenNet<<endl;
+                // Step 2: Receive complete message of that length
+                string statsData;
+                int statsLen = ntohl(lenNet); // Convert to host byte order
+                int totalReceived = 0;
+                while (totalReceived < statsLen) {
+                  int bytes = recv(clientSocket, buffer, sizeof(buffer), 0);
+                  if (bytes <= 0)
+                    break;
+                  statsData.append(buffer, bytes);
+                  totalReceived += bytes;
                 }
 
-                string receivedDownloadStatus(buffer, bytesReceived);
-                if (receivedDownloadStatus == "DownloadCompleteSuccessfully")
-                {
-                    // Updating the status
+                if (totalReceived != statsLen) {
+                  cerr << "❌ Incomplete stats message from client" << endl;
+                  return;
+                }
+
+                // Step 3: Tokenize the entire response string
+                vector<string> tokens = tokenizeVector(statsData);
+
+                // Step 4: Extract stats in groups of 6
+                for (int i = 0; i + 5 < tokens.size(); i += 6) {
+                  string command = tokens[i];
+                  if (command != "update_peer_stats") {
+                    cerr << "❌ Invalid peer stats command received: "
+                         << command << endl;
+                    continue;
+                  }
+
+                  string peerIP = tokens[i + 1];
+                  int peerPort = stoi(tokens[i + 2]);
+                  float score = stof(tokens[i + 3]);
+                  int chunksServed = stoi(tokens[i + 4]);
+                  double totalTime = stod(tokens[i + 5]);
+
+                  string key = peerIP + ":" + to_string(peerPort);
+
+                  if (globalPeerStats.find(key) == globalPeerStats.end()) {
+                    globalPeerStats[key] = PeerStats(peerIP, peerPort);
+                  }
+
+                  PeerStats &peer = globalPeerStats[key];
+                  peer.score = score;
+                  peer.chunksServed = chunksServed;
+                  peer.totalDownloadTime = totalTime;
+
+                  cout << "📥 Updated tracker stats for " << key
+                       << ": score=" << score << ", chunks=" << chunksServed
+                       << ", time=" << totalTime << endl;
+                }
+
+                // ❗️Step 5: Receive final download status (fix: don't use
+                // leftover `buffer`)
+                char statusBuf[64];
+                int statusBytes =
+                    recv(clientSocket, statusBuf, sizeof(statusBuf), 0);
+                if (statusBytes > 0) {
+                  string receivedDownloadStatus(statusBuf, statusBytes);
+                  if (receivedDownloadStatus.find(
+                          "DownloadCompleteSuccessfully") != string::npos) {
                     lock_guard<mutex> lock(downloadsMutex); // 🔒 [Phase 3]
-                    for (auto status : downloads)
-                    {
-                        if (status->fileName == fname)
-                        {
-                            status->status = 1;
-                        }
+                    for (auto status : downloads) {
+                      if (status->fileName == fname) {
+                        status->status = 1;
+                      }
                     }
+                    cout << "✅ Tracker updated download status to complete "
+                            "for file: "
+                         << fname << endl;
+                  }
                 }
-
                 // update tracker that I have the file too
                 for (auto file : currentGroup->sharedFiles)
                 {
@@ -1553,4 +1642,38 @@ int main(int argc, char *argv[])
     // close(serverSocket);
 
     return 0;
+}
+
+void updatePeerStatsFromClient(const string &ip, int port, float score,
+                               int served, double time) {
+  string key = ip + ":" + to_string(port);
+  globalPeerStats[key] = PeerStats(ip, port);
+  globalPeerStats[key].score = score;
+  globalPeerStats[key].chunksServed = served;
+  globalPeerStats[key].totalDownloadTime = time;
+}
+
+string serializePeerStats(const PeerStats &stats) {
+  return stats.ip + " " + to_string(stats.port) + " " + to_string(stats.score) +
+         " " + to_string(stats.chunksServed) + " " +
+         to_string(stats.totalDownloadTime);
+}
+
+vector<string> tokenizeVector(string &str) {
+  vector<string> tokens;
+  string temp;
+  for (auto c : str) {
+    if (c == ' ') {
+      if (temp.empty() == false) {
+        tokens.push_back(temp);
+        temp.clear();
+      }
+    } else {
+      temp += c;
+    }
+  }
+  if (temp.empty() == false) {
+    tokens.push_back(temp);
+  }
+  return tokens;
 }

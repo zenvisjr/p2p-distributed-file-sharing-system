@@ -1,1 +1,6 @@
 before downloading check if file is already present at location where we want to download
+ //replace userID with IP later when sending peer list to client
+
+ ✅ Minor Enhancements (Optional)
+Avoid assigning same peer all the time
+(You can later introduce fairness by also considering how many chunks are already assigned to each peer).
