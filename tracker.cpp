@@ -201,11 +201,11 @@ bool LoginUser(string userID, string password, string currentUserIP, string curr
         // VERY IMPORTANT: mapping currentThreadUser to same userID so that we can track user of current client
         currentThreadUser = userMap[userID];
 
-        // replace userID with IP later when sending peer list to client
-        string key = userID + ":" + userMap[userID]->portNumber;
-        if (globalPeerStats.find(key) == globalPeerStats.end()) {
-          globalPeerStats[key] = PeerStats(userID, stoi(userMap[userID]->portNumber));
-        }
+        // // replace userID with IP later when sending peer list to client
+        // string key = userID + ":" + userMap[userID]->portNumber;
+        // if (globalPeerStats.find(key) == globalPeerStats.end()) {
+        //   globalPeerStats[key] = PeerStats(userID, stoi(userMap[userID]->portNumber));
+        // }
 
         cout << userID << " is logged in now" << endl;
         return true;
@@ -608,6 +608,12 @@ void AcceptRequest(string groupID, string userID, User *&currentThreadUser, int 
                 response = "Added to group successfully! WELCOME!!";
                 send(clientSocket, response.c_str(), response.size(), 0);
 
+                // replace userID with IP later when sending peer list to client
+                string key = userID + ":" + userMap[userID]->portNumber;
+                if (globalPeerStats.find(key) == globalPeerStats.end()) {
+                  globalPeerStats[key] =
+                      PeerStats(userID, stoi(userMap[userID]->portNumber));
+                }
                 // //printing pending list user
                 // ListPendingRequest(groupID, currentThreadUser, clientSocket, check);
 

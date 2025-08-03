@@ -16,8 +16,14 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
+float K = 1.25;         // 📌 Global multiplier for fair threshold
+//best distribution values 
+float alpha = .20;      // Score weight
+float betaa = .80;       // Load penalty weight
 
 using namespace std;
 #define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
@@ -64,6 +70,8 @@ vector<PeerStats> peerList; // ✅ can use this if needed for ordering
 unordered_map<int, ChunkAssignment>
     assignedChunks;                 // ✅ chunk → peer assignment
 unordered_set<int> completedChunks; // ✅ track downloaded chunks
+// 📦 Global vector of chunk assignments
+// vector<ChunkAssignment> assignedChunks;
 
 void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
                             string port, int clientSocket);
@@ -102,7 +110,9 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
                         vector<bool> &isChunkDone,
                         vector<string> &receivedChunkHashes);
 
-int main(int argc, char *argv[]) {
+void AssignChunksToPeers(int totalChunks);
+
+    int main(int argc, char *argv[]) {
   // checking if correct no of arguments were passed
   if (argc != 3) {
     perror("Usage : ./client <IP>:<PORT> tracker_info.txt");
@@ -889,26 +899,29 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     //   peerStatsMap[key] = PeerStats(ip, port);
     // }
 
-    for (int i = 0; i < totalChunks; ++i) {
-      PeerStats *bestPeer = nullptr;
-      double bestScore = -1;
+    // for (int i = 0; i < totalChunks; ++i) {
+    //   PeerStats *bestPeer = nullptr;
+    //   double bestScore = -1;
 
-      for (auto &[key, peer] : peerStatsMap) {
-        double score = (peer.totalDownloadTime > 0)
-                           ? (double)peer.chunksServed / peer.totalDownloadTime
-                           : 1.0; // default score if new peer
-        if (!bestPeer || score > bestScore) {
-          bestPeer = &peer;
-          bestScore = score;
-        }
-      }
+    //   for (auto &[key, peer] : peerStatsMap) {
+    //     double score = (peer.totalDownloadTime > 0)
+    //                        ? (double)peer.chunksServed / peer.totalDownloadTime
+    //                        : 1.0; // default score if new peer
+    //     if (!bestPeer || score > bestScore) {
+    //       bestPeer = &peer;
+    //       bestScore = score;
+    //     }
+    //   }
 
-      if (bestPeer) {
-        assignedChunks[i] = ChunkAssignment(i, *bestPeer);
-        cout << "Chunk " << i << " assigned to " << bestPeer->ip << ":"
-             << bestPeer->port << " (score: " << bestScore << ")" << endl;
-      }
-    }
+    //   if (bestPeer) {
+    //     assignedChunks[i] = ChunkAssignment(i, *bestPeer);
+    //     cout << "Chunk " << i << " assigned to " << bestPeer->ip << ":"
+    //          << bestPeer->port << " (score: " << bestScore << ")" << endl;
+    //   }
+    // }
+
+    // implementing Peer-Quality-Aware Selection with hybrid utility based chunk assignment along with fallback appraoch
+    AssignChunksToPeers(noOfChunks);
 
     // ✅ Download chunks
     vector<string> downloadedChunks(totalChunks);
@@ -1921,4 +1934,62 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
                      to_string(peer.totalDownloadTime) + " ";
 
     return message;
+  }
+
+  void AssignChunksToPeers(int totalChunks) {
+    int numPeers = peerStatsMap.size();
+    assignedChunks.clear();
+
+    if (numPeers == 0)
+      return;
+
+    // Step 1: Normalize all peer scores
+    float maxScore = 0.0;
+    for (const auto &[_, stats] : peerStatsMap)
+      maxScore = max(maxScore, stats.score);
+
+    unordered_map<string, float> normalizedScores;
+    int threshold = ceil(K * totalChunks / numPeers); // ✅ Peer chunk cap
+
+    for (const auto &[key, stats] : peerStatsMap)
+      normalizedScores[key] = (maxScore > 0) ? stats.score / maxScore : 0;
+
+    // Step 2: Assign chunks based on score - load utility
+
+    unordered_map<string, int> chunksAssigned;
+
+    for (int i = 0; i < totalChunks; ++i) {
+      string bestKey = "";
+      float bestUtility = -1e9;
+
+      for (const auto &[key, score] : normalizedScores) {
+        int assigned = chunksAssigned[key];
+
+        if (assigned >= threshold)
+          continue; // ✅ Enforce max cap
+
+        float utility = alpha * score - betaa * assigned/threshold;
+        if (utility > bestUtility) {
+          bestUtility = utility;
+          bestKey = key;
+        }
+      }
+
+      if (!bestKey.empty()) {
+        chunksAssigned[bestKey]++;
+        const PeerStats &peer = peerStatsMap[bestKey];
+        assignedChunks[i] = ChunkAssignment(i, peer);
+
+        cout << "📦 Chunk " << i << " assigned to " << bestKey
+             << " (score=" << peer.score
+             << ", assigned=" << chunksAssigned[bestKey] << ")\n";
+      } else {
+        cerr << "❌ No peer available for chunk " << i << endl;
+      }
+    }
+
+    // 📊 Final Summary
+    cout << "\n📊 Final Chunk Distribution:\n";
+    for (const auto &[key, count] : chunksAssigned)
+      cout << " - " << key << ": " << count << " chunks\n";
   }
