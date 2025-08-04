@@ -4,8 +4,6 @@
 #include <cstdio> //for snprintf
 #include <cstring>
 #include <fcntl.h> // For open()
-#include <fstream>
-#include <ios>
 #include <iostream>
 #include <mutex>
 #include <netinet/in.h>
@@ -21,7 +19,7 @@
 #include <vector>
 
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
-float K = 1.25;         // 📌 Global multiplier for fair threshold
+float K = 1.25f;         // 📌 Global multiplier for fair threshold
 // best distribution values
 float alpha = .20; // Score weight
 float betaa = .80; // Load penalty weight
@@ -107,9 +105,8 @@ string DeserializePeerStats(const PeerStats &peer);
 void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
                         const vector<string> &chunkHashes,
                         const string &destinationPath, const string &fileName,
-                        mutex &writeLock, vector<string> &downloadedChunks,
-                        vector<bool> &isChunkDone,
-                        vector<string> &receivedChunkHashes, char *fileMemory);
+                        mutex &writeLock, vector<bool> &isChunkDone,
+                        char *fileMemory);
 
 void AssignChunksToPeers(int totalChunks);
 int PrepareFileForWriting(const string &filePath, size_t totalSize);
@@ -248,7 +245,7 @@ int main(int argc, char *argv[]) {
     checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
                            clientSocket);
 
-    sleep(10); // Give time for bob and charlie to send join requests
+    sleep(7); // Give time for bob and charlie to send join requests
 
     // Alice accepts bob's request
     command = "accept_request g1 bob";
@@ -262,8 +259,19 @@ int main(int argc, char *argv[]) {
     checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
                            clientSocket);
 
+    // command = "accept_request g1 dave";
+    // arguments = ExtractArguments(command);
+    // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+    //                        clientSocket);
+
+    // command = "accept_request g1 eve";
+    // arguments = ExtractArguments(command);
+    // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+    //                        clientSocket);
+
     // Alice uploads file to group
     command = "upload_file hi.pdf g1";
+    // command = "upload_file yo.mkv g1";
     arguments = ExtractArguments(command);
     checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
                            clientSocket);
@@ -289,11 +297,11 @@ int main(int argc, char *argv[]) {
     arguments = ExtractArguments(command);
     checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
                            clientSocket);
-    // sleep(5);
-    // command = "download_file g1 hi.pdf /home/zenvis/yo";
-    // arguments = ExtractArguments(command);
-    // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-    //                        clientSocket);
+    sleep(6);
+    command = "upload_file hi.pdf g1";
+    arguments = ExtractArguments(command);
+    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+                           clientSocket);
 
   } else if (clientPort == "6003") {
     cout << "Client is running on port 6003" << endl;
@@ -316,40 +324,84 @@ int main(int argc, char *argv[]) {
     arguments = ExtractArguments(command);
     checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
                            clientSocket);
+  
 
-    // sleep(4); // Wait for alice to accept and upload
+    sleep(6); // Wait for alice to accept and upload
 
-    // // Charlie downloads file
-    // command = "download_file hi.pdf g1";
-    // arguments = ExtractArguments(command);
-    // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-    //                        clientSocket);
-  }
-
-  while (true) {
-    cout << "\n" << endl;
-    cout << "Enter commands:> ";
-
-    string command;
-    // cout << "🔍 Main thread: About to call getline" << endl;
-    getline(cin, command);
-    // cout << "🔍 Main thread: Received command: " << command << endl;
-
-    if (command == "") {
-      cout << "Command cannot be empty" << endl;
-      continue;
-    }
-
-    vector<string> arguments = ExtractArguments(command);
-    // cout << "🔍 Main thread: About to call checkAppendSendRecieve" << endl;
+    // Charlie downloads file
+    command = "download_file g1 hi.pdf /home/zenvis/yo";
+    arguments = ExtractArguments(command);
     checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
                            clientSocket);
-    // cout << "🔍 Main thread: Finished checkAppendSendRecieve" << endl;
   }
+  // } else if (clientPort == "6004") {
+  //   cout << "Client is running on port 6004" << endl;
+  //   vector<string> arguments;
+  //   string command;
 
-  close(clientSocket);
-  return 0;
-}
+  //   // Dave creates user and logs in
+  //   command = "create_user dave password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
+
+  //   command = "login dave password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
+
+  //   // Dave sends join request
+  //   command = "join_group g1";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
+  // } else if (clientPort == "6005") {
+  //   cout << "Client is running on port 6005" << endl;
+  //   vector<string> arguments;
+  //   string command;
+
+  //   // Eve creates user and logs in
+  //   command = "create_user eve password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
+
+  //   command = "login eve password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
+
+  //   // Eve sends join request
+  //   command = "join_group g1";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
+  // }
+
+    while (true) {
+      cout << "\n" << endl;
+      cout << "Enter commands:> ";
+
+      string command;
+      // cout << "🔍 Main thread: About to call getline" << endl;
+      getline(cin, command);
+      // cout << "🔍 Main thread: Received command: " << command << endl;
+
+      if (command == "") {
+        cout << "Command cannot be empty" << endl;
+        continue;
+      }
+
+      vector<string> arguments = ExtractArguments(command);
+      // cout << "🔍 Main thread: About to call checkAppendSendRecieve" << endl;
+      checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+                             clientSocket);
+      // cout << "🔍 Main thread: Finished checkAppendSendRecieve" << endl;
+    }
+
+    close(clientSocket);
+    return 0;
+  }
 
 void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
                             string port, int clientSocket) {
@@ -888,7 +940,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     // ✅ Prepare chunk assignments
     int totalChunks = noOfChunks;
     int peerCount = peers.size();
-    vector<string> receivedChunkHashes(totalChunks); // Stores per-chunk SHA1s
+    // vector<string> receivedChunkHashes(totalChunks); // Stores per-chunk
+    // SHA1s
 
     // basic round robin
     // TODO: implement piece selection
@@ -946,23 +999,40 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     }
 
     // ✅ Download chunks
-    vector<string> downloadedChunks(totalChunks);
+
+    unordered_map<string, vector<int>> peerToChunks;
+    for (const auto &[chunkIndex, assignment] : assignedChunks) {
+      string peerKey = assignment.assignedPeer.ip + ":" +
+                       to_string(assignment.assignedPeer.port);
+      peerToChunks[peerKey].push_back(chunkIndex);
+    }
+
+    // vector<string> downloadedChunks(totalChunks);
     vector<bool> isChunkDone(totalChunks, false);
     mutex writeLock;
     vector<thread> threads;
 
-    for (const auto &entry : assignedChunks) {
-      int chunkIndex = entry.first;
-      //   PeerStats peer = entry.second.assignedPeer;
-      // 🔑 Get the key to access peer from peerStatsMap for reference update
-      string peerKey = entry.second.assignedPeer.ip + ":" +
-                       to_string(entry.second.assignedPeer.port);
+    // for (const auto &entry : assignedChunks) {
+    //   int chunkIndex = entry.first;
+    //   //   PeerStats peer = entry.second.assignedPeer;
+    //   // 🔑 Get the key to access peer from peerStatsMap for reference update
+    //   string peerKey = entry.second.assignedPeer.ip + ":" +
+    //                    to_string(entry.second.assignedPeer.port);
+    //   PeerStats &peer = peerStatsMap[peerKey];
+    //   threads.emplace_back(DownloadChunkRange, ref(peer),
+    //                        vector<int>{chunkIndex}, ref(chunkHashes),
+    //                        ref(destinationPath), ref(fileName),
+    //                        ref(writeLock), ref(isChunkDone),
+    //                        ref(receivedChunkHashes), fileMemory);
+    // }
+
+    // ✅ Spawn one thread per peer
+    for (const auto &[peerKey, chunkIndices] : peerToChunks) {
       PeerStats &peer = peerStatsMap[peerKey];
-      threads.emplace_back(DownloadChunkRange, ref(peer),
-                           vector<int>{chunkIndex}, ref(chunkHashes),
-                           ref(destinationPath), ref(fileName), ref(writeLock),
-                           ref(downloadedChunks), ref(isChunkDone),
-                           ref(receivedChunkHashes), fileMemory);
+      threads.emplace_back(DownloadChunkRange, ref(peer), chunkIndices,
+                           ref(chunkHashes), ref(destinationPath),
+                           ref(fileName), ref(writeLock), ref(isChunkDone),
+                           fileMemory);
     }
 
     for (auto &t : threads) {
@@ -1037,29 +1107,40 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
              << ", Time: " << peer.totalDownloadTime << endl;
       }
     }
+    cout<<"Combined stats: "<<combinedStats<<endl;
 
     if (statCount > 0) {
       // 🧠 Step 2: Send length of the combinedStats first
-      int len = combinedStats.size();
-      int netLen = htonl(len);
+      uint32_t len = static_cast<uint32_t>(combinedStats.size()); // 100% safe
+      cout<<"Combined stats length: "<<len<<endl;
+      uint32_t netLen = htonl(len);
+      cout<<"Combined stats length in network byte order: "<<netLen<<endl;
+
       if (send(clientSocket, &netLen, sizeof(netLen), 0) < 0) {
         perror("❌ Failed to send peer stats length to tracker");
         return;
       }
 
       // 🧠 Step 3: Send the combinedStats payload
-      if (send(clientSocket, combinedStats.c_str(), len, 0) < 0) {
-        perror("❌ Failed to send combined peer stats to tracker");
-        return;
+      int totalSent = 0;
+      while (totalSent < len) {
+        int sent = send(clientSocket, combinedStats.c_str() + totalSent, len - totalSent, 0);
+        if (sent <= 0) {
+          perror("❌ Failed to send combined peer stats to tracker");
+          return;
+        }
+        totalSent += sent;
       }
+      cout << "Combined stats sent successfully, size: " << totalSent << endl;
     }
+    
 
     // ✅ Step 4: Send Download completion signal
-    string response = "DownloadCompleteSuccessfully\n";
-    if (send(clientSocket, response.c_str(), response.size(), 0) < 0) {
-      perror("❌ Error sending download status to tracker");
-      return;
-    }
+    // string response = "DownloadCompleteSuccessfully\n";
+    // if (send(clientSocket, response.c_str(), response.size(), 0) < 0) {
+    //   perror("❌ Error sending download status to tracker");
+    //   return;
+    // }
   } else if (arg[0] == "show_downloads") {
     if (arg.size() != 1) {
       cout << "USAGE: show_downloads" << endl;
@@ -1114,9 +1195,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
                         const vector<string> &chunkHashes,
                         const string &destinationPath, const string &fileName,
-                        mutex &writeLock, vector<string> &downloadedChunks,
-                        vector<bool> &isChunkDone,
-                        vector<string> &receivedChunkHashes, char *fileMemory) {
+                        mutex &writeLock, vector<bool> &isChunkDone,
+                        char *fileMemory) {
 
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
@@ -1190,7 +1270,7 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
       continue;
     }
 
-    receivedChunkHashes[chunkIndex] = localHash;
+    // receivedChunkHashes[chunkIndex] = localHash;
 
     {
       lock_guard<mutex> lock(writeLock);
@@ -1440,91 +1520,90 @@ void DownloadHandler(string clientIP, string port) {
 }
 
 void ShareToClient(int peerSocket) {
-  // while(1)
-  // {
-  // cout<<"Entering here"<<endl;
-  char buffer[BUFFERSIZE];
-  int bytesRecieved = recv(peerSocket, buffer, sizeof(buffer) - 1, 0);
+  while (true) {
+    char buffer[BUFFERSIZE];
+    int bytesReceived = recv(peerSocket, buffer, sizeof(buffer) - 1, 0);
 
-  if (bytesRecieved <= 0) {
-    if (bytesRecieved < 0) {
-      perror("Unable to read command");
-    } else {
-      // Client has closed the connection
-      cout << "Client has closed the connection" << endl;
+    if (bytesReceived <= 0) {
+      if (bytesReceived < 0) {
+        perror("Unable to read command");
+      } else {
+        cout << "🔌 Client has closed the connection" << endl;
+      }
+      break; // Exit the loop and close socket
     }
-    return;
-  }
-  buffer[bytesRecieved] = '\0'; // Null-terminating the received data
 
-  string command(buffer);
-  cout << "📥 Received command: " << command << endl;
+    buffer[bytesReceived] = '\0';
+    string command(buffer);
+    cout << "📥 Received command: " << command << endl;
 
-  vector<string> tokens = tokenizeVector(command);
-  if (tokens.size() != 3 || tokens[0] != "send_chunk") {
-    cerr << "❌ Invalid command format from peer: " << command << endl;
-    return;
-  }
+    vector<string> tokens = tokenizeVector(command);
+    if (tokens.size() != 3 || tokens[0] != "send_chunk") {
+      cerr << "❌ Invalid command format from peer: " << command << endl;
+      continue;
+    }
 
-  string fname = tokens[1];
-  int chunkIndex = stoi(tokens[2]);
+    string fname = tokens[1];
+    int chunkIndex = stoi(tokens[2]);
 
-  if (fnameToPath.find(fname) == fnameToPath.end()) {
-    cout << "❌ File not found for: " << fname << endl;
-    return;
-  }
+    if (fnameToPath.find(fname) == fnameToPath.end()) {
+      cout << "❌ File not found for: " << fname << endl;
+      continue;
+    }
 
-  string fullPath = fnameToPath[fname];
-  int fd = open(fullPath.c_str(), O_RDONLY);
-  if (fd == -1) {
-    perror("Unable to open file");
-    return;
-  }
+    string fullPath = fnameToPath[fname];
+    int fd = open(fullPath.c_str(), O_RDONLY);
+    if (fd == -1) {
+      perror("Unable to open file");
+      continue;
+    }
 
-  off_t offset = chunkIndex * BUFFERSIZE;
-  unsigned char chunkBuf[BUFFERSIZE];
+    off_t offset = chunkIndex * BUFFERSIZE;
+    unsigned char chunkBuf[BUFFERSIZE];
 
-  if (lseek(fd, offset, SEEK_SET) == -1) {
-    perror("Failed to seek to chunk");
-    close(fd);
-    return;
-  }
-
-  int bytesRead = read(fd, chunkBuf, BUFFERSIZE);
-  if (bytesRead <= 0) {
-    perror("Failed to read chunk");
-    close(fd);
-    return;
-  }
-
-  close(fd);
-
-  // Step 1: Send 4-byte chunk length
-  int chunkLenNetwork = htonl(bytesRead);
-  if (send(peerSocket, &chunkLenNetwork, sizeof(chunkLenNetwork), 0) == -1) {
-    perror("Failed to send chunk size");
-    close(fd);
-    return;
-  }
-
-  // Step 2: Send actual chunk data
-  int totalSent = 0;
-  while (totalSent < bytesRead) {
-    int sent = send(peerSocket, chunkBuf + totalSent, bytesRead - totalSent, 0);
-    if (sent <= 0) {
-      perror("Failed to send chunk data");
+    if (lseek(fd, offset, SEEK_SET) == -1) {
+      perror("Failed to seek to chunk");
       close(fd);
-      return;
+      continue;
     }
-    totalSent += sent;
+
+    int bytesRead = read(fd, chunkBuf, BUFFERSIZE);
+    if (bytesRead <= 0) {
+      perror("Failed to read chunk");
+      close(fd);
+      continue;
+    }
+
+    close(fd);
+
+    // Send 4-byte chunk length
+    int chunkLenNetwork = htonl(bytesRead);
+    if (send(peerSocket, &chunkLenNetwork, sizeof(chunkLenNetwork), 0) == -1) {
+      perror("Failed to send chunk size");
+      continue;
+    }
+
+    // Send actual chunk data
+    int totalSent = 0;
+    while (totalSent < bytesRead) {
+      int sent =
+          send(peerSocket, chunkBuf + totalSent, bytesRead - totalSent, 0);
+      if (sent <= 0) {
+        perror("Failed to send chunk data");
+        break;
+      }
+      totalSent += sent;
+    }
+
+    cout << "✅ Sent chunk " << chunkIndex << " of file " << fname
+         << " of size " << bytesRead << " to peer.\n";
+    cout << "📤 Finished serving chunk " << chunkIndex
+         << ". Ready for next...\n";
   }
 
-  cout << "✅ Sent chunk " << chunkIndex << " of file " << fname << "of size "
-       << bytesRead << " to peer.\n";
-  close(fd);
-  close(peerSocket); // Close after sending
-  cout << "📤 Finished serving chunk. Returning to main loop.\n";
-  return;
+  // ✅ Close socket after all requests are done
+  close(peerSocket);
+  cout << "🧵 Exiting peer handler thread\n";
 }
 
 // void SendFile(int peerSocket, string fpath, string fname) {
@@ -2001,42 +2080,42 @@ void AssignChunksToPeers(int totalChunks) {
     maxScore = max(maxScore, stats.score);
 
   unordered_map<string, float> normalizedScores;
-  int threshold = ceil(K * totalChunks / numPeers); // ✅ Peer chunk cap
+  int threshold = ceil((float)totalChunks / numPeers * K); // ✅ Peer chunk cap
 
-  for (const auto &[key, stats] : peerStatsMap)
-    normalizedScores[key] = (maxScore > 0) ? stats.score / maxScore : 0;
+  // for (const auto &[key, stats] : peerStatsMap)
+  //   normalizedScores[key] = (maxScore > 0) ? stats.score / maxScore : 0;
 
   // Step 2: Assign chunks based on score - load utility
 
   unordered_map<string, int> chunksAssigned;
 
-  for (int i = 0; i < totalChunks; ++i) {
-    string bestKey = "";
-    float bestUtility = -1e9;
+  // }
 
-    for (const auto &[key, score] : normalizedScores) {
-      int assigned = chunksAssigned[key];
+  for (int i = 0; i < totalChunks; i++) {
+    float bestScore = -1e9;
+    string bestPeerID = "";
 
-      if (assigned >= threshold)
-        continue; // ✅ Enforce max cap
+    for (const auto &[peerID, stats] : peerStatsMap) {
+      int currentLoad = chunksAssigned[peerID];
 
-      float utility = alpha * score - betaa * assigned / threshold;
-      if (utility > bestUtility) {
-        bestUtility = utility;
-        bestKey = key;
+      if (currentLoad >= threshold)
+        continue;
+
+      float penalty = (float)currentLoad / threshold;
+
+      float finalScore = alpha * stats.score -betaa *penalty;
+
+      if (finalScore > bestScore) {
+        bestScore = finalScore;
+        bestPeerID = peerID;
       }
     }
 
-    if (!bestKey.empty()) {
-      chunksAssigned[bestKey]++;
-      const PeerStats &peer = peerStatsMap[bestKey];
-      assignedChunks[i] = ChunkAssignment(i, peer);
-
-      cout << "📦 Chunk " << i << " assigned to " << bestKey
-           << " (score=" << peer.score
-           << ", assigned=" << chunksAssigned[bestKey] << ")\n";
+    if (!bestPeerID.empty()) {
+      chunksAssigned[bestPeerID]++;
+      assignedChunks[i] = ChunkAssignment(i, peerStatsMap[bestPeerID]);
     } else {
-      cerr << "❌ No peer available for chunk " << i << endl;
+      cerr << "⚠️ No eligible peer found for chunk " << i << endl;
     }
   }
 

@@ -1,4 +1,5 @@
 #include <iostream>
+#include <random>
 #include <thread>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -203,8 +204,13 @@ bool LoginUser(string userID, string password, string currentUserIP, string curr
 
         // // replace userID with IP later when sending peer list to client
         string key = userID + ":" + userMap[userID]->portNumber;
+        uniform_real_distribution<float> scoreDist(0.1, 1.0);
+        default_random_engine gen;
+        float score = scoreDist(gen);
         if (globalPeerStats.find(key) == globalPeerStats.end()) {
-          globalPeerStats[key] = PeerStats(userID, stoi(userMap[userID]->portNumber));
+          globalPeerStats[key] =
+              PeerStats(userID, stoi(userMap[userID]->portNumber));
+          globalPeerStats[key].score = score;
         }
 
         cout << userID << " is logged in now" << endl;
@@ -963,27 +969,44 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                      << endl;
 
                 // recieving response from client after file is downloaded successfully
-                char buffer[BUFFERSIZE];
+                
 
                 // recieve peer status
-                int lenNet;
+                uint32_t lenNet;
                 int received = recv(clientSocket, &lenNet, sizeof(lenNet), 0);
                 if (received != sizeof(lenNet)) {
-                  cerr << "❌ Failed to receive peer stats length" << endl;
+                  cerr << "❌ Incomplete length field: expected "
+                       << sizeof(lenNet) << " bytes, got " << received
+                       << " bytes" << endl;
                   return;
                 }
-                cout<<"recieve peer stats length: "<<lenNet<<endl;
+                int statsLen = ntohl(lenNet);
+
+                cout << "recieve peer stats length: " << received << endl;
+                cout << "recieve peer stats length in network byte order: "
+                     << lenNet << endl;
+                cout << "recieve peer stats length in host byte order: " << statsLen
+                     << endl;
                 // Step 2: Receive complete message of that length
                 string statsData;
-                int statsLen = ntohl(lenNet); // Convert to host byte order
                 int totalReceived = 0;
+                char buffer[BUFFERSIZE];
                 while (totalReceived < statsLen) {
-                  int bytes = recv(clientSocket, buffer, sizeof(buffer), 0);
-                  if (bytes <= 0)
-                    break;
+                  int toRead =
+                      min((int)sizeof(buffer),
+                          statsLen - totalReceived); // ❗️ limit to remaining
+                  int bytes =
+                      recv(clientSocket, buffer, toRead, 0); // ✅ bounded recv
+                  if (bytes <= 0) {
+                    cerr << "❌ Connection closed while receiving stats"
+                         << endl;
+                    return;
+                  }
                   statsData.append(buffer, bytes);
                   totalReceived += bytes;
                 }
+                cout << "total length received: " << totalReceived << endl;
+                cout << "statsData: " << statsData << endl;
 
                 if (totalReceived != statsLen) {
                   cerr << "❌ Incomplete stats message from client" << endl;
@@ -994,6 +1017,7 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                 vector<string> tokens = tokenizeVector(statsData);
 
                 // Step 4: Extract stats in groups of 6
+                bool downloadComplete = false;
                 for (int i = 0; i + 5 < tokens.size(); i += 6) {
                   string command = tokens[i];
                   if (command != "update_peer_stats") {
@@ -1001,6 +1025,7 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                          << command << endl;
                     continue;
                   }
+                  
 
                   string peerIP = tokens[i + 1];
                   int peerPort = stoi(tokens[i + 2]);
@@ -1022,18 +1047,21 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                   cout << "📥 Updated tracker stats for " << key
                        << ": score=" << score << ", chunks=" << chunksServed
                        << ", time=" << totalTime << endl;
+                  downloadComplete = true;
                 }
 
                 // ❗️Step 5: Receive final download status (fix: don't use
                 // leftover `buffer`)
-                char statusBuf[64];
-                int statusBytes =
-                    recv(clientSocket, statusBuf, sizeof(statusBuf), 0);
-                if (statusBytes > 0) {
-                  string receivedDownloadStatus(statusBuf, statusBytes);
-                  if (receivedDownloadStatus.find(
-                          "DownloadCompleteSuccessfully") != string::npos) {
-                    lock_guard<mutex> lock(downloadsMutex); // 🔒 [Phase 3]
+                // char statusBuf[64];
+                // int statusBytes =
+                //     recv(clientSocket, statusBuf, sizeof(statusBuf), 0);
+                // if (statusBytes > 0) {
+                //   string receivedDownloadStatus(statusBuf, statusBytes);
+                //   if (receivedDownloadStatus.find(
+                //           "DownloadCompleteSuccessfully") != string::npos) {
+                // if (downloadComplete)
+                // {
+                    // lock_guard<mutex> lock(downloadsMutex); // 🔒 [Phase 3]
                     for (auto status : downloads) {
                       if (status->fileName == fname) {
                         status->status = 1;
@@ -1042,8 +1070,7 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                     cout << "✅ Tracker updated download status to complete "
                             "for file: "
                          << fname << endl;
-                  }
-                }
+                // }
                 // update tracker that I have the file too
                 for (auto file : currentGroup->sharedFiles)
                 {
@@ -1056,6 +1083,7 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                         }
                     }
                 }
+                cout << "✅ Tracker uadded file in the list" << endl;
                 break;
             }
         }

@@ -33,7 +33,8 @@ void runTest(int numChunks, float alpha, float beta) {
   unordered_map<string, int> chunkCountPerPeer;
 
   int numPeers = peerStatsMap.size();
-  int maxAllowedChunks = ceil((float)numChunks / numPeers * kThreshold);
+  int maxAllowedChunks = ceil(((float)numChunks / numPeers) * kThreshold);
+  cout << "Max allowed chunks per peer: " << maxAllowedChunks << endl;
 
   for (int i = 0; i < numChunks; i++) {
     float bestScore = -1e9;
@@ -49,6 +50,7 @@ void runTest(int numChunks, float alpha, float beta) {
       float penalty = (float)currentLoad / maxAllowedChunks;
 
       float finalScore = alpha * normalizedScore - beta * penalty;
+      // float finalScore = stats.score;
 
       if (finalScore > bestScore) {
         bestScore = finalScore;
@@ -150,6 +152,7 @@ void generatePeers(int numPeers) {
     string ip = "192.168.0." + to_string(i);
     int port = 6000 + i;
     float score = scoreDist(gen);
+    // float score = 1;
 
     PeerStats p(ip, port);
     p.score = score;
@@ -159,16 +162,16 @@ void generatePeers(int numPeers) {
 
 // ---------- Main ----------
 int main() {
-  generatePeers(50); // 50 peers
-  int numChunks = 500;
+  generatePeers(4); // 50 peers
+  int numChunks = 672;
 
   vector<pair<float, float>> testPairs = {{0.1, 0.9}, {0.2, 0.8}, {0.3, 0.7},
                                           {0.4, 0.6}, {0.5, 0.5}, {0.6, 0.4},
                                           {0.7, 0.3}, {0.8, 0.2}, {0.9, 0.1}};
 
-  for (auto &[alpha, beta] : testPairs) {
-    runTest(numChunks, alpha, beta);
-  }
+  // for (auto &[alpha, beta] : testPairs) {
+    runTest(numChunks, .2, .8);
+  // }
 
   return 0;
 }
