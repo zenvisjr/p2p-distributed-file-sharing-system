@@ -202,10 +202,10 @@ bool LoginUser(string userID, string password, string currentUserIP, string curr
         currentThreadUser = userMap[userID];
 
         // // replace userID with IP later when sending peer list to client
-        // string key = userID + ":" + userMap[userID]->portNumber;
-        // if (globalPeerStats.find(key) == globalPeerStats.end()) {
-        //   globalPeerStats[key] = PeerStats(userID, stoi(userMap[userID]->portNumber));
-        // }
+        string key = userID + ":" + userMap[userID]->portNumber;
+        if (globalPeerStats.find(key) == globalPeerStats.end()) {
+          globalPeerStats[key] = PeerStats(userID, stoi(userMap[userID]->portNumber));
+        }
 
         cout << userID << " is logged in now" << endl;
         return true;
@@ -609,11 +609,11 @@ void AcceptRequest(string groupID, string userID, User *&currentThreadUser, int 
                 send(clientSocket, response.c_str(), response.size(), 0);
 
                 // replace userID with IP later when sending peer list to client
-                string key = userID + ":" + userMap[userID]->portNumber;
-                if (globalPeerStats.find(key) == globalPeerStats.end()) {
-                  globalPeerStats[key] =
-                      PeerStats(userID, stoi(userMap[userID]->portNumber));
-                }
+                // string key = userID + ":" + userMap[userID]->portNumber;
+                // if (globalPeerStats.find(key) == globalPeerStats.end()) {
+                //   globalPeerStats[key] =
+                //       PeerStats(userID, stoi(userMap[userID]->portNumber));
+                // }
                 // //printing pending list user
                 // ListPendingRequest(groupID, currentThreadUser, clientSocket, check);
 
@@ -1435,7 +1435,7 @@ void clientHandler(int clientSocket)
             vector<string> chunkHashes;
             for (int i = 7; i < command.size(); i++)
             {
-                cout << "each chunk hash: " << command[i] << endl;
+                // cout << "each chunk hash: " << command[i] << endl;
                 chunkHashes.push_back(command[i]);
             }
 

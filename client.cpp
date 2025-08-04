@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <arpa/inet.h> // Needed for inet_pton
-#include <cstdio>      //for snprintf
+#include <cmath>
+#include <cstdio> //for snprintf
 #include <cstring>
 #include <fcntl.h> // For open()
 #include <fstream>
@@ -8,6 +10,7 @@
 #include <mutex>
 #include <netinet/in.h>
 #include <openssl/sha.h> //for SHA1 hashing
+#include <sys/mman.h>    // For mmap(), PROT_READ, PROT_WRITE, MAP_SHARED
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -16,8 +19,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <algorithm>
-#include <cmath>
 
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
 float K = 1.25;         // 📌 Global multiplier for fair threshold
@@ -26,7 +27,7 @@ float alpha = .20;      // Score weight
 float betaa = .80;       // Load penalty weight
 
 using namespace std;
-#define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
+#define BUFFERSIZE 512*1024 // 512 KB buffer size for file transfer
 #define MAX_CONNECTION 50
 
 class FileMetadata {
@@ -108,11 +109,13 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
                         const string &destinationPath, const string &fileName,
                         mutex &writeLock, vector<string> &downloadedChunks,
                         vector<bool> &isChunkDone,
-                        vector<string> &receivedChunkHashes);
+                        vector<string> &receivedChunkHashes, char *fileMemory);
 
 void AssignChunksToPeers(int totalChunks);
+int PrepareFileForWriting(const string &filePath, size_t totalSize);
+char *MapFileToMemory(int fd, size_t fileSize);
 
-    int main(int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
   // checking if correct no of arguments were passed
   if (argc != 3) {
     perror("Usage : ./client <IP>:<PORT> tracker_info.txt");
@@ -923,6 +926,18 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     // implementing Peer-Quality-Aware Selection with hybrid utility based chunk assignment along with fallback appraoch
     AssignChunksToPeers(noOfChunks);
 
+    string fullPath = destinationPath + "/" + fileName;
+    int destinationFileFd = PrepareFileForWriting(fullPath, fileSize);
+    if (destinationFileFd < 0) {
+      return;
+    }
+
+    char *fileMemory = MapFileToMemory(destinationFileFd, fileSize);
+    if (!fileMemory) {
+      close(destinationFileFd);
+      return;
+    }
+
     // ✅ Download chunks
     vector<string> downloadedChunks(totalChunks);
     vector<bool> isChunkDone(totalChunks, false);
@@ -939,7 +954,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
       threads.emplace_back(
           DownloadChunkRange, ref(peer), vector<int>{chunkIndex},
           ref(chunkHashes), ref(destinationPath), ref(fileName), ref(writeLock),
-          ref(downloadedChunks), ref(isChunkDone), ref(receivedChunkHashes));
+          ref(downloadedChunks), ref(isChunkDone), ref(receivedChunkHashes),
+          fileMemory);
     }
 
     for (auto &t : threads) {
@@ -947,16 +963,16 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     }
 
     // ✅ Reassemble file
-    string fullPath = destinationPath + "/" + fileName;
-    ofstream out(fullPath, ios::binary);
-    for (int i = 0; i < totalChunks; ++i) {
-      if (!isChunkDone[i]) {
-        cerr << "❌ Missing chunk " << i << " — download failed!" << endl;
-        return;
-      }
-      out << downloadedChunks[i];
-    }
-    out.close();
+    // string fullPath = destinationPath + "/" + fileName;
+    // ofstream out(fullPath, ios::binary);
+    // for (int i = 0; i < totalChunks; ++i) {
+    //   if (!isChunkDone[i]) {
+    //     cerr << "❌ Missing chunk " << i << " — download failed!" << endl;
+    //     return;
+    //   }
+    //   out << downloadedChunks[i];
+    // }
+    // out.close();
 
     string downloadedFileHash;
     // ✅ Calculate complete file hash
@@ -974,6 +990,10 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     } else {
       cout << "✅ Final file hash verified successfully." << endl;
     }
+
+    // munmap and close
+    munmap(fileMemory, fileSize);
+    close(destinationFileFd);
 
     // 🧠 Step 1: Combine all peer stats into one string
     string combinedStats;
@@ -1065,13 +1085,14 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
   }
 
   // 📦 [Piece Selection]
-  void DownloadChunkRange(
-      PeerStats & peer, const std::vector<int> &chunkIndices,
-      const std::vector<std::string> &chunkHashes,
-      const std::string &destinationPath, const std::string &fileName,
-      std::mutex &writeLock, std::vector<std::string> &downloadedChunks,
-      std::vector<bool> &isChunkDone,
-      std::vector<std::string> &receivedChunkHashes) {
+  void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
+                          const vector<string> &chunkHashes,
+                          const string &destinationPath,
+                          const string &fileName, mutex &writeLock,
+                          vector<string> &downloadedChunks,
+                          vector<bool> &isChunkDone,
+                          vector<string> &receivedChunkHashes,
+                          char *fileMemory) {
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -1149,11 +1170,15 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 
       {
         lock_guard<mutex> lock(writeLock);
-        downloadedChunks[chunkIndex] = chunkData;
+        // downloadedChunks[chunkIndex] = chunkData;
         isChunkDone[chunkIndex] = true;
         cout << "✔️ Chunk " << chunkIndex << " received from " << peer.ip << ":"
              << peer.port << endl;
       }
+
+      // ✅ All checks passed → Write to memory-mapped file at correct offset
+      size_t offset = chunkIndex * BUFFERSIZE;
+      memcpy(fileMemory + offset, chunkData.data(), chunkData.size());
 
       auto end = chrono::high_resolution_clock::now();
       chrono::duration<double> elapsed = end - start;
@@ -1992,4 +2017,31 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     cout << "\n📊 Final Chunk Distribution:\n";
     for (const auto &[key, count] : chunksAssigned)
       cout << " - " << key << ": " << count << " chunks\n";
+  }
+
+  char *MapFileToMemory(int fd, size_t totalSize) {
+    void *mapped =
+        mmap(NULL, totalSize, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+    if (mapped == MAP_FAILED) {
+      perror("❌ mmap failed");
+      return nullptr;
+    }
+    return (char *)mapped;
+  }
+
+  int PrepareFileForWriting(const string &filePath, size_t totalSize) {
+    int fd = open(filePath.c_str(), O_RDWR | O_CREAT, 0666);
+    if (fd < 0) {
+      perror("❌ Failed to open destination file");
+      return -1;
+    }
+
+    // Stretch the file size
+    if (ftruncate(fd, totalSize) == -1) {
+      perror("❌ Failed to preallocate file size");
+      close(fd);
+      return -1;
+    }
+
+    return fd;
   }
