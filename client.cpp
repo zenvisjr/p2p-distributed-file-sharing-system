@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <arpa/inet.h> // Needed for inet_pton
 #include <cmath>
+#include <condition_variable>
 #include <cstdio> //for snprintf
 #include <cstring>
 #include <fcntl.h> // For open()
@@ -8,7 +9,8 @@
 #include <mutex>
 #include <netinet/in.h>
 #include <openssl/sha.h> //for SHA1 hashing
-#include <sys/mman.h>    // For mmap(), PROT_READ, PROT_WRITE, MAP_SHARED
+#include <queue>
+#include <sys/mman.h> // For mmap(), PROT_READ, PROT_WRITE, MAP_SHARED
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -19,7 +21,7 @@
 #include <vector>
 
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
-float K = 1.25f;         // 📌 Global multiplier for fair threshold
+float K = 1.25f;        // 📌 Global multiplier for fair threshold
 // best distribution values
 float alpha = .20; // Score weight
 float betaa = .80; // Load penalty weight
@@ -27,6 +29,16 @@ float betaa = .80; // Load penalty weight
 using namespace std;
 #define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
 #define MAX_CONNECTION 50
+
+queue<int> socketQueue;
+mutex queueMutex;
+condition_variable queueCV;
+const int THREAD_POOL_SIZE = 5;
+
+queue<string> commandQueue;
+mutex commandQueueMutex;
+condition_variable inputCV;
+bool shutdownInput = false; // To stop the input thread later if needed
 
 class FileMetadata {
 public:
@@ -111,7 +123,7 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
 void AssignChunksToPeers(int totalChunks);
 int PrepareFileForWriting(const string &filePath, size_t totalSize);
 char *MapFileToMemory(int fd, size_t fileSize);
-
+void ChunkWorkerThread();
 int main(int argc, char *argv[]) {
   // checking if correct no of arguments were passed
   if (argc != 3) {
@@ -324,7 +336,6 @@ int main(int argc, char *argv[]) {
     arguments = ExtractArguments(command);
     checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
                            clientSocket);
-  
 
     sleep(6); // Wait for alice to accept and upload
 
@@ -378,30 +389,31 @@ int main(int argc, char *argv[]) {
   //                          clientSocket);
   // }
 
-    while (true) {
-      cout << "\n" << endl;
-      cout << "Enter commands:> ";
 
-      string command;
-      // cout << "🔍 Main thread: About to call getline" << endl;
-      getline(cin, command);
-      // cout << "🔍 Main thread: Received command: " << command << endl;
+  while (true) {
+    cout << "\n" << endl;
+    cout << "Enter commands:> ";
 
-      if (command == "") {
-        cout << "Command cannot be empty" << endl;
-        continue;
-      }
+    string command;
+    // cout << "🔍 Main thread: About to call getline" << endl;
+    getline(cin, command);
+    // cout << "🔍 Main thread: Received command: " << command << endl;
 
-      vector<string> arguments = ExtractArguments(command);
-      // cout << "🔍 Main thread: About to call checkAppendSendRecieve" << endl;
-      checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                             clientSocket);
-      // cout << "🔍 Main thread: Finished checkAppendSendRecieve" << endl;
+    if (command == "") {
+      cout << "Command cannot be empty" << endl;
+      continue;
     }
 
-    close(clientSocket);
-    return 0;
+    vector<string> arguments = ExtractArguments(command);
+    // cout << "🔍 Main thread: About to call checkAppendSendRecieve" << endl;
+    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+                           clientSocket);
+    // cout << "🔍 Main thread: Finished checkAppendSendRecieve" << endl;
   }
+
+  close(clientSocket);
+  return 0;
+}
 
 void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
                             string port, int clientSocket) {
@@ -1107,14 +1119,14 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
              << ", Time: " << peer.totalDownloadTime << endl;
       }
     }
-    cout<<"Combined stats: "<<combinedStats<<endl;
+    cout << "Combined stats: " << combinedStats << endl;
 
     if (statCount > 0) {
       // 🧠 Step 2: Send length of the combinedStats first
       uint32_t len = static_cast<uint32_t>(combinedStats.size()); // 100% safe
-      cout<<"Combined stats length: "<<len<<endl;
+      cout << "Combined stats length: " << len << endl;
       uint32_t netLen = htonl(len);
-      cout<<"Combined stats length in network byte order: "<<netLen<<endl;
+      cout << "Combined stats length in network byte order: " << netLen << endl;
 
       if (send(clientSocket, &netLen, sizeof(netLen), 0) < 0) {
         perror("❌ Failed to send peer stats length to tracker");
@@ -1124,7 +1136,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
       // 🧠 Step 3: Send the combinedStats payload
       int totalSent = 0;
       while (totalSent < len) {
-        int sent = send(clientSocket, combinedStats.c_str() + totalSent, len - totalSent, 0);
+        int sent = send(clientSocket, combinedStats.c_str() + totalSent,
+                        len - totalSent, 0);
         if (sent <= 0) {
           perror("❌ Failed to send combined peer stats to tracker");
           return;
@@ -1133,7 +1146,6 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
       }
       cout << "Combined stats sent successfully, size: " << totalSent << endl;
     }
-    
 
     // ✅ Step 4: Send Download completion signal
     // string response = "DownloadCompleteSuccessfully\n";
@@ -1495,6 +1507,13 @@ void DownloadHandler(string clientIP, string port) {
          << clientPort << endl;
   }
 
+  // Initialize thread pool for chunk server
+  for (int i = 0; i < THREAD_POOL_SIZE; ++i) {
+    thread(ChunkWorkerThread).detach();
+  }
+  cout << "✅ Chunk server thread pool initialized with " << THREAD_POOL_SIZE
+       << " workers" << endl;
+
   // Step 4 and 5: Loop to accept and handle incoming connections
   while (true) {
     // cout<<"Enterinng accept phase"<<endl;
@@ -1511,8 +1530,15 @@ void DownloadHandler(string clientIP, string port) {
     }
 
     // Spawn a new thread to handle this client
-    thread downloadThread(ShareToClient, peerSocket);
-    downloadThread.detach(); // detach the thread
+    // thread downloadThread(ShareToClient, peerSocket);
+    // downloadThread.detach(); // detach the thread
+
+    // using thread pool
+    {
+      lock_guard<mutex> lock(queueMutex);
+      socketQueue.push(peerSocket);
+    }
+    queueCV.notify_one(); // Wake one sleeping worker
     cout << "Download thread spawned successfully" << endl;
     // break;
     // return;
@@ -1604,6 +1630,8 @@ void ShareToClient(int peerSocket) {
   // ✅ Close socket after all requests are done
   close(peerSocket);
   cout << "🧵 Exiting peer handler thread\n";
+  // Show prompt again to resume clean input
+  cout << "\nEnter commands:> " << flush;
 }
 
 // void SendFile(int peerSocket, string fpath, string fname) {
@@ -2103,7 +2131,7 @@ void AssignChunksToPeers(int totalChunks) {
 
       float penalty = (float)currentLoad / threshold;
 
-      float finalScore = alpha * stats.score -betaa *penalty;
+      float finalScore = alpha * stats.score - betaa * penalty;
 
       if (finalScore > bestScore) {
         bestScore = finalScore;
@@ -2150,4 +2178,21 @@ int PrepareFileForWriting(const string &filePath, size_t totalSize) {
   }
 
   return fd;
+}
+
+void ChunkWorkerThread() {
+  while (true) {
+    int peerSocket;
+
+    {
+      unique_lock<mutex> lock(queueMutex);
+      queueCV.wait(lock, [] { return !socketQueue.empty(); });
+
+      peerSocket = socketQueue.front();
+      socketQueue.pop();
+    }
+
+    cout << "🧵 Worker picked socket " << peerSocket << endl;
+    ShareToClient(peerSocket); // Your existing function
+  }
 }
