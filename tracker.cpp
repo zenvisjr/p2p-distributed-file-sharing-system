@@ -1628,6 +1628,11 @@ void clientHandler(int clientSocket)
             // trackerRunning = false;
             // exit(0);
             // break;
+        } else if (command[0] == "PING") {
+          string response = "PONG";
+          cout << "\nPONG sent to client "<< endl;
+          send(clientSocket, response.c_str(), response.size(), 0);
+          continue;
         }
         // else
         // {

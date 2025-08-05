@@ -1,15 +1,18 @@
 #include <algorithm>
 #include <arpa/inet.h> // Needed for inet_pton
+#include <atomic>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio> //for snprintf
 #include <cstring>
 #include <fcntl.h> // For open()
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <netinet/in.h>
 #include <openssl/sha.h> //for SHA1 hashing
 #include <queue>
+#include <sstream>
 #include <sys/mman.h> // For mmap(), PROT_READ, PROT_WRITE, MAP_SHARED
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -19,13 +22,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <sstream>
-
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
 float K = 1.25f;        // 📌 Global multiplier for fair threshold
 // best distribution values
-float alpha = .20; // Score weight
-float betaa = .80; // Load penalty weight
+float alpha = .20;              // Score weight
+float betaa = .80;              // Load penalty weight
+std::atomic<bool> trackerAlive; // Tracker health check
+int myTrackerIndex;
 
 using namespace std;
 #define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
@@ -121,6 +124,10 @@ void AssignChunksToPeers(int totalChunks);
 int PrepareFileForWriting(const string &filePath, size_t totalSize);
 char *MapFileToMemory(int fd, size_t fileSize);
 void ChunkWorkerThread();
+void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
+                           const string &currentTrackerPort);
+
+bool ReconnectToAnotherTracker(int &clientSocket, int failedTrackerIndex);
 int main(int argc, char *argv[]) {
   // checking if correct no of arguments were passed
   if (argc != 3) {
@@ -202,22 +209,22 @@ int main(int argc, char *argv[]) {
 
   // Seed the random number generator
   srand(time(NULL));
-  int randomIndex = rand() % trackerList.size();
+  myTrackerIndex = rand() % trackerList.size();
 
   if (clientPort == "6001") {
-    randomIndex = 0;
+    myTrackerIndex = 0;
   }
 
   else if (clientPort == "6002") {
-    randomIndex = 1;
+    myTrackerIndex = 1;
   }
 
   else if (clientPort == "6003") {
-    randomIndex = 2;
+    myTrackerIndex = 2;
   }
 
-  string trackerIP = trackerList[randomIndex].first;
-  string trackerPort = trackerList[randomIndex].second;
+  string trackerIP = trackerList[myTrackerIndex].first;
+  string trackerPort = trackerList[myTrackerIndex].second;
 
   // cout<<IPAddress<<endl;
   // cout<<portNumber<<endl;
@@ -261,6 +268,10 @@ int main(int argc, char *argv[]) {
   }
   cout << "Client is listening for request on " << cLientIP << ":" << clientPort
        << endl;
+  trackerAlive = true;
+  thread hb(StartHeartbeatMonitor, clientSocket, trackerIP, trackerPort);
+  hb.detach();
+  // Let it run in background
   // if (clientPort == "6001") {
   //   cout << "Client is running on port 6001" << endl;
   //   vector<string> arguments;
@@ -363,13 +374,13 @@ int main(int argc, char *argv[]) {
   //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
   //                          clientSocket);
 
-    // sleep(6); // Wait for alice to accept and upload
+  // sleep(6); // Wait for alice to accept and upload
 
-    // // Charlie downloads file
-    // command = "download_file g1 hi.pdf /home/zenvis/yo";
-    // arguments = ExtractArguments(command);
-    // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-    //                        clientSocket);
+  // // Charlie downloads file
+  // command = "download_file g1 hi.pdf /home/zenvis/yo";
+  // arguments = ExtractArguments(command);
+  // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                        clientSocket);
   // }
   // } else if (clientPort == "6004") {
   //   cout << "Client is running on port 6004" << endl;
@@ -415,9 +426,8 @@ int main(int argc, char *argv[]) {
   //                          clientSocket);
   // }
 
-
   while (true) {
-    cout << "\n" << endl;
+    // cout << "\n" << endl;
     cout << "Enter commands:> ";
 
     string command;
@@ -428,6 +438,15 @@ int main(int argc, char *argv[]) {
     if (command == "") {
       cout << "Command cannot be empty" << endl;
       continue;
+    }
+    // 🔽 Put this BEFORE sending to tracker
+    if (!trackerAlive) {
+      cout << "Trying to reconnect to another tracker..." << endl;
+      if (!ReconnectToAnotherTracker(clientSocket, myTrackerIndex)) {
+        cerr << "❌ All trackers are down. Please restart the system manually."
+             << endl;
+        exit(1);
+      }
     }
 
     vector<string> arguments = ExtractArguments(command);
@@ -1049,9 +1068,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
       cout << "Downloading chunks from " << peerKey << endl;
       for (int chunkIndex : chunkIndices) {
         cout << "chunk number " << chunkIndex << endl;
-        
       }
-    }      
+    }
 
     // vector<string> downloadedChunks(totalChunks);
     vector<bool> isChunkDone(totalChunks, false);
@@ -2229,4 +2247,89 @@ void ChunkWorkerThread() {
     cout << "🧵 Worker picked socket " << peerSocket << endl;
     ShareToClient(peerSocket); // Your existing function
   }
+}
+
+// Send heartbeat (PING) and wait for PONG
+void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
+                           const string &currentTrackerPort) {
+cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
+         << currentTrackerPort << endl;
+  while (true) {
+    // Send PING
+    string pingMsg = "PING";
+    cout << "\nSending PING to tracker " << currentTrackerIP << ":"
+         << currentTrackerPort << endl;
+    send(clientSocket, pingMsg.c_str(), pingMsg.size(), 0);
+
+    // Wait for response with timeout using future
+    char buffer[1024] = {0};
+    future<ssize_t> responseFuture = async(launch::async, [&]() {
+      return recv(clientSocket, buffer, sizeof(buffer), 0);
+    });
+
+    if (responseFuture.wait_for(chrono::seconds(5)) == future_status::ready) {
+      ssize_t bytes = responseFuture.get();
+      if (bytes > 0) {
+        string response(buffer, bytes);
+        if (response == "PONG") {
+          cout << "\n✅ PONG received from tracker " << currentTrackerIP << ":"
+               << currentTrackerPort << endl;
+          // All good
+          this_thread::sleep_for(chrono::seconds(10));
+          continue;
+        }
+      }
+    }
+
+    // No valid response received in 5s
+    cout << "\n⚠️ Tracker " << currentTrackerIP << ":" << currentTrackerPort
+         << " is unresponsive." << endl;
+    trackerAlive = false;
+    break; // Stop the thread
+  }
+  cout << "Heartbeat monitor stopped for tracker " << currentTrackerIP << ":"
+       << currentTrackerPort << endl;
+  // cout << "Enter commands:> ";
+}
+
+bool ReconnectToAnotherTracker(int &clientSocket, int failedTrackerIndex) {
+  cout << "Reconnecting to another tracker..." << endl;
+  vector<int> otherTrackers;
+  for (int i = 0; i < trackerList.size(); ++i) {
+    if (i != failedTrackerIndex)
+      otherTrackers.push_back(i);
+  }
+
+  if (otherTrackers.empty())
+    return false;
+
+  random_shuffle(otherTrackers.begin(), otherTrackers.end());
+
+  for (int i : otherTrackers) {
+    const auto &[ip, port] = trackerList[i]; // get IP and port
+    int newSocket = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in serv_addr;
+    serv_addr.sin_family = AF_INET;
+    int trackerPortNumber = atoi(port.c_str());
+    serv_addr.sin_port = htons(trackerPortNumber);
+    inet_pton(AF_INET, ip.c_str(), &serv_addr.sin_addr);
+
+    if (connect(newSocket, (sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) {
+      close(clientSocket); // close old socket
+      clientSocket = newSocket;
+      myTrackerIndex = i;
+      trackerAlive = true;
+
+      // Restart heartbeat
+      thread t(StartHeartbeatMonitor, clientSocket, ip, port);
+      t.detach();
+
+      cout << "✅ Reconnected to tracker: " << ip << ":" << port << endl;
+      return true;
+    }
+
+    close(newSocket);
+  }
+
+  return false;
 }
