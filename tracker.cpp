@@ -20,6 +20,7 @@
 std::mutex userMutex;      // 🔒 [Phase 3]
 std::mutex groupMutex;     // 🔒 [Phase 3]
 std::mutex downloadsMutex; // 🔒 [Phase 3]
+std::mutex globalPeerStatsMutex; // 🔒 [Phase 3]
 
 using namespace std;
 
@@ -248,9 +249,33 @@ bool LogoutUser(User *&currentThreadUser)
     {
         cout << "User is already logged out" << endl;
         return false;
-    }
-    else
-    {
+    } else {
+      string userID = currentThreadUser->userID;
+      string userKey = userID + ":" + currentThreadUser->portNumber;
+
+      // Remove from globalPeerStats
+      {
+        lock_guard<mutex> lock(globalPeerStatsMutex); // 🔒 [Phase 3]
+        if (globalPeerStats.find(userKey) != globalPeerStats.end()) {
+          globalPeerStats.erase(userKey);
+          cout << "🗑️ Removed " << userKey << " from globalPeerStats" << endl;
+        }
+      }
+
+      // Remove from peersHavingFile in all groups
+      {
+        lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
+        for (auto &[gid, group] : groupMap) {
+          for (auto &[fhash, meta] : group->sharedFiles) {
+            auto &peers = meta->peersHavingFile;
+            peers.erase(remove_if(peers.begin(), peers.end(),
+                                  [&](User *u) { return u->userID == userID; }),
+                        peers.end());
+          }
+        }
+        cout << "🗑️ Removed user " << userID
+             << " from all shared files in groups" << endl;
+      }
         currentThreadUser->isLoggedIn = false;
         currentThreadUser->IpAddress = "";
         currentThreadUser->portNumber = "";
@@ -1010,6 +1035,11 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                 lock_guard<mutex> lock(downloadsMutex); // 🔒 [Phase 3]
                 downloads.push_back(newInfo);
 
+                string syncCreate = "SYNC_DOWNLOAD_INIT|" + groupID + "|" +
+                                    fname + "|" + currentThreadUser->userID;
+                sendSyncToPeers(syncCreate,
+                                myTrackerIndex); // 🔄 Sync download init
+
                 cout << "Sending metadata of size: " << response.size() << " bytes" << endl;
 
                 // Send the size first (as fixed 4-byte int)
@@ -1131,6 +1161,11 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                         s->status = 1;
                       }
                     }
+                    string syncMsg = "SYNC_DOWNLOAD|" + groupID + "|" + fname +
+                                     "|" + currentThreadUser->userID;
+                    sendSyncToPeers(syncMsg,
+                                    myTrackerIndex); // 🔄 Sync download status
+
                     cout << "✅ Tracker updated download status to complete "
                             "for file: "
                          << fname << endl;
@@ -1980,15 +2015,43 @@ void handleSyncConnection(int syncSocket) {
     }
   } else if (command == "SYNC_LOGOUT_USER" && tokens.size() == 2) {
     string userID = tokens[1];
+    string userKey = "";
 
-    lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
-    if (userMap.find(userID) != userMap.end()) {
-      userMap[userID]->isLoggedIn = false;
-      userMap[userID]->IpAddress = "";
-      userMap[userID]->portNumber = "";
-      cout << "[Sync] User logout synced: " << userID << endl;
-    } else {
-      cout << "[Sync] Cannot sync logout, user not found: " << userID << endl;
+    {
+      lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
+      if (userMap.find(userID) != userMap.end()) {
+        User *user = userMap[userID];
+        user->isLoggedIn = false;
+        user->IpAddress = "";
+        user->portNumber = "";
+        userKey = userID + ":" + user->portNumber;
+        cout << "🟡 [Sync] User logout synced: " << userID << endl;
+      } else {
+        cout << "⚠️ [Sync] Cannot sync logout, user not found: " << userID
+             << endl;
+        return;
+      }
+    }
+
+    {
+      lock_guard<mutex> lock(globalPeerStatsMutex); // 🔒 [Phase 3]
+      if (globalPeerStats.erase(userKey) > 0) {
+        cout << "🗑️ [Sync] Removed peerStats for " << userKey << endl;
+      }
+    }
+
+    {
+      lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
+      for (auto &[gid, group] : groupMap) {
+        for (auto &[fhash, meta] : group->sharedFiles) {
+          auto &peers = meta->peersHavingFile;
+          peers.erase(remove_if(peers.begin(), peers.end(),
+                                [&](User *u) { return u->userID == userID; }),
+                      peers.end());
+        }
+      }
+      cout << "🗑️ [Sync] Removed user " << userID
+           << " from all shared file peer lists" << endl;
     }
   } else if (command == "SYNC_CREATE_GROUP" && tokens.size() == 3) {
     string groupID = tokens[1];
@@ -2161,6 +2224,36 @@ void handleSyncConnection(int syncSocket) {
       cout << "✅ [Sync] Peer " << userID << " added to file " << fileHash
            << " in group " << gid << endl;
     }
+  } else if (command == "SYNC_DOWNLOAD_INIT" && tokens.size() == 4) {
+    string groupID = tokens[1];
+    string fname = tokens[2];
+    string userID = tokens[3];
+
+    DownloadInfo *d = new DownloadInfo(groupID, fname);
+    lock_guard<mutex> lock(downloadsMutex); // 🔒 [Phase 3]
+    downloads.push_back(d);
+    cout << "📥 Synced DownloadInfo for " << fname << " in group " << groupID
+         << " by " << userID << endl;
+  } else if (command == "SYNC_DOWNLOAD" && tokens.size() == 4) {
+    string groupID = tokens[1];
+    string fname = tokens[2];
+    string userID = tokens[3];
+
+    // No need for lock here if downloads is protected by external lock when
+    // used
+    lock_guard<mutex> lock(downloadsMutex); // 🔒
+
+    for (auto d : downloads) {
+      if (d->groupID == groupID && d->fileName == fname) {
+        d->status = 1;
+        cout << "✅ Synced download status for " << fname << " in group "
+             << groupID << " by " << userID << endl;
+        break;
+      }
+    }
+
+    // Optional: If user doesn't exist in downloads list yet, add it
+    // (Useful for tracker recovery)
   }
 
         // Future: handle other sync types here...
