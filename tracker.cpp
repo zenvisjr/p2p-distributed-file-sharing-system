@@ -221,10 +221,12 @@ bool LoginUser(string userID, string password, string currentUserIP, string curr
           globalPeerStats[key].score = score;
         }
 
+        // 🛰️ Sync login status to all trackers (now includes IP and port)
+        string syncCommand = "SYNC_LOGIN_USER|" + userID + "|" + currentUserIP +
+                             "|" + currentUserPort + "|" + to_string(score);
+        sendSyncToPeers(syncCommand, myTrackerIndex);
+
         cout << userID << " is logged in now" << endl;
-        // 🔄 [Phase 3] Sync login status to all trackers
-        // string syncCommand = "SYNC_LOGIN_USER|" + userID;
-        // sendSyncCommandToPeers(syncCommand);
         return true;
     }
     else
@@ -765,6 +767,18 @@ void UploadFile(string filePath, string groupID, int fsize, string fname, int fc
             currentGroup->sharedFiles[fhash] = newfile;
             // currentGroup->sharedFiles[fhash].push_back(newfile);
         }
+
+        // 🛰️ [SYNC] Send upload metadata to other trackers
+        string syncMsg = "SYNC_UPLOAD_FILE|" + groupID + "|" +
+                         to_string(fsize) + "|" + fname + "|" +
+                         to_string(fchunks) + "|" + fhash + "|" +
+                         currentThreadUser->userID;
+
+        for (const string &chunkHash : chunkHashes) {
+          syncMsg += "|" + chunkHash;
+        }
+
+        sendSyncToPeers(syncMsg, myTrackerIndex); // 🌐
         cout << "New file " << fname << " Uploaded by " << currentThreadUser->userID << " of Size " << fsize << " in " << groupID << " Group" << endl;
         response = "File shared in group successfully";
         send(clientSocket, response.c_str(), response.size(), 0);
@@ -819,7 +833,7 @@ void ListSharableFiles(string groupID, User *&currentThreadUser, int clientSocke
         for (auto fname : currentGroup->sharedFiles)
         {
             cout << fname.second->fileName << endl;
-            shareFiles += "#" + fname.second->fileName;
+            shareFiles += " " + fname.second->fileName;
         }
         // cout<<shareFiles<<endl;
         response = shareFiles;
@@ -883,6 +897,11 @@ void StopShare(string groupID, string fname, User *&currentThreadUser, int clien
                 fhash = index.first;
                 // deleting the file
                 currentGroup->sharedFiles.erase(fhash);
+
+                sendSyncToPeers("SYNC_STOP_SHARE|" + groupID + "|" + fhash,
+                                myTrackerIndex); // ✅ [Sync]
+
+                
                 cout << fname << " removed from shared file list of the" << groupID << " group" << endl;
                 response = fname + " stopped sharing successfully";
                 send(clientSocket, response.c_str(), response.size(), 0);
@@ -1107,9 +1126,9 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                 // if (downloadComplete)
                 // {
                     // lock_guard<mutex> lock(downloadsMutex); // 🔒 [Phase 3]
-                    for (auto status : downloads) {
-                      if (status->fileName == fname) {
-                        status->status = 1;
+                    for (auto s : downloads) {
+                      if (s->fileName == fname) {
+                        s->status = 1;
                       }
                     }
                     cout << "✅ Tracker updated download status to complete "
@@ -1124,11 +1143,18 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                         auto it = find(file.second->peersHavingFile.begin(), file.second->peersHavingFile.end(), currentThreadUser);
                         if (it == file.second->peersHavingFile.end())
                         {
-                            file.second->peersHavingFile.push_back(currentThreadUser);
+                          file.second->peersHavingFile.push_back(
+                              currentThreadUser);
+
+                          string sync = "SYNC_ADD_PEER|" + groupID + "|" +
+                                        file.first + "|" +
+                                        currentThreadUser->userID;
+                          sendSyncToPeers(sync,
+                                          myTrackerIndex); // ✅ Sync peer add
                         }
                     }
                 }
-                cout << "✅ Tracker uadded file in the list" << endl;
+                cout << "✅ Tracker updated file in the list" << endl;
                 break;
             }
         }
@@ -1176,7 +1202,7 @@ void ShowDownloadStatus(User *&currentThreadUser, int clientSocket, int check)
             string downloadInfo = string(d->status ? "D" : "C") + " " + d->groupID + " " + d->fileName;
 
             // cout<<downloadInfo<<endl;
-            response += "#" + downloadInfo;
+            response += " " + downloadInfo;
         }
         // cout<<response<<endl;
         send(clientSocket, response.c_str(), response.size(), 0);
@@ -1406,9 +1432,7 @@ void clientHandler(int clientSocket)
                 response = "User login successfully";
                 checkNoOfLogin++;
 
-                // 🔄 [Phase 3] Sync login status to all trackers
-                string syncCommand = "SYNC_LOGIN_USER|" + id;
-                sendSyncToPeers(syncCommand, myTrackerIndex);
+              
             }
             else
             {
@@ -1927,32 +1951,48 @@ void handleSyncConnection(int syncSocket) {
       userMap[userID] = newUser;
       cout << "✅ [Sync] User created via sync: " << userID << endl;
     }
-  } else if (command == "SYNC_LOGIN_USER" && tokens.size() == 2) {
+  } else if (command == "SYNC_LOGIN_USER" && tokens.size() == 5) {
+    string userID = tokens[1];
+    string ip = tokens[2];
+    string port = tokens[3];
+    float score = stof(tokens[4]);
+
+    lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
+    if (userMap.find(userID) != userMap.end()) {
+      userMap[userID]->isLoggedIn = true;
+      userMap[userID]->IpAddress = ip;
+      userMap[userID]->portNumber = port;
+
+      cout << "[Sync] User login synced: " << userID << " (" << ip << ":"
+           << port << ")" << endl;
+
+      // Update peer stats
+      string key = userID + ":" + port;
+      if (globalPeerStats.find(key) == globalPeerStats.end()) {
+        globalPeerStats[key] = PeerStats(userID, stoi(port));
+      }
+      globalPeerStats[key].score = score;
+
+      cout << "[Sync] PeerStats updated for: " << key << " with score " << score
+           << endl;
+    } else {
+      cout << "[Sync] Cannot sync login, user not found: " << userID << endl;
+    }
+  } else if (command == "SYNC_LOGOUT_USER" && tokens.size() == 2) {
     string userID = tokens[1];
 
     lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
     if (userMap.find(userID) != userMap.end()) {
-        userMap[userID]->isLoggedIn = true;
-        cout << "[Sync] User login synced: " << userID << endl;
-      } else {
-        cout << "[Sync] Cannot sync login, user not found: " << userID << endl;
-      }
-    } else if (command == "SYNC_LOGOUT_USER" && tokens.size() == 2) {
-        string userID = tokens[1];
-
-        lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
-        if (userMap.find(userID) != userMap.end()) {
-          userMap[userID]->isLoggedIn = false;
-          userMap[userID]->IpAddress = "";
-          userMap[userID]->portNumber = "";
-          cout << "[Sync] User logout synced: " << userID << endl;
-        } else {
-          cout << "[Sync] Cannot sync logout, user not found: " << userID
-               << endl;
-        }
-    } else if (command == "SYNC_CREATE_GROUP" && tokens.size() == 3) {
-      string groupID = tokens[1];
-      string ownerID = tokens[2];
+      userMap[userID]->isLoggedIn = false;
+      userMap[userID]->IpAddress = "";
+      userMap[userID]->portNumber = "";
+      cout << "[Sync] User logout synced: " << userID << endl;
+    } else {
+      cout << "[Sync] Cannot sync logout, user not found: " << userID << endl;
+    }
+  } else if (command == "SYNC_CREATE_GROUP" && tokens.size() == 3) {
+    string groupID = tokens[1];
+    string ownerID = tokens[2];
 
     //   lock_guard<mutex> userLock(userMutex);   // 🔒 To access userMap
       lock_guard<mutex> groupLock(groupMutex); // 🔒 To modify groupMap
@@ -1969,74 +2009,159 @@ void handleSyncConnection(int syncSocket) {
         cout << "✅ [Sync] Group created via sync: " << groupID << " by "
              << ownerID << endl;
     //   }
-    } else if (command == "SYNC_JOIN_GROUP" && tokens.size() == 3) {
-      string groupID = tokens[1];
-      string userID = tokens[2];
+  } else if (command == "SYNC_JOIN_GROUP" && tokens.size() == 3) {
+    string groupID = tokens[1];
+    string userID = tokens[2];
 
-      // 🔒 [Phase 3] Just directly update state assuming all validations passed
-      // on sender
-      lock_guard<mutex> groupLock(groupMutex);
-      lock_guard<mutex> userLock(userMutex);
+    // 🔒 [Phase 3] Just directly update state assuming all validations passed
+    // on sender
+    lock_guard<mutex> groupLock(groupMutex);
+    lock_guard<mutex> userLock(userMutex);
 
-      Group *group = groupMap[groupID];
-      User *user = userMap[userID];
+    Group *group = groupMap[groupID];
+    User *user = userMap[userID];
 
-      group->pendingMembers.push_back(user);
-      cout << "✅ [Sync] Join request synced for user " << userID
-           << " to group " << groupID << endl;
+    group->pendingMembers.push_back(user);
+    cout << "✅ [Sync] Join request synced for user " << userID << " to group "
+         << groupID << endl;
 
-    } else if (command == "SYNC_ACCEPT_REQUEST") {
-      string groupID = tokens[1];
-      string userID = tokens[2];
+  } else if (command == "SYNC_ACCEPT_REQUEST") {
+    string groupID = tokens[1];
+    string userID = tokens[2];
 
-      lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
-      Group *grp = groupMap[groupID];
-      if (!grp)
-        return;
+    lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
+    Group *grp = groupMap[groupID];
+    if (!grp)
+      return;
 
-      User *pendingUser = userMap[userID];
-      if (!pendingUser)
-        return;
+    User *pendingUser = userMap[userID];
+    if (!pendingUser)
+      return;
 
-      // Remove from pending
-      auto it = find(grp->pendingMembers.begin(), grp->pendingMembers.end(),
-                     pendingUser);
-      if (it != grp->pendingMembers.end())
-        grp->pendingMembers.erase(it);
+    // Remove from pending
+    auto it = find(grp->pendingMembers.begin(), grp->pendingMembers.end(),
+                   pendingUser);
+    if (it != grp->pendingMembers.end())
+      grp->pendingMembers.erase(it);
 
-      // Add to members
-      grp->groupMembers.push_back(pendingUser);
-    } else if (tokens[0] == "SYNC_LEAVE") {
-      string gid = tokens[1];
-      string uid = tokens[2];
-      Group *g = groupMap[gid];
-      if (g != nullptr) {
-        auto it = find_if(g->groupMembers.begin(), g->groupMembers.end(),
-                          [&](User *u) { return u->userID == uid; });
-        if (it != g->groupMembers.end())
-          g->groupMembers.erase(it);
+    // Add to members
+    grp->groupMembers.push_back(pendingUser);
+    cout << "✅ [Sync] Accept request synced: " << userID << " added to group "
+         << groupID << endl;
+
+  } else if (tokens[0] == "SYNC_LEAVE") {
+    string gid = tokens[1];
+    string uid = tokens[2];
+    Group *g = groupMap[gid];
+    if (g != nullptr) {
+      auto it = find_if(g->groupMembers.begin(), g->groupMembers.end(),
+                        [&](User *u) { return u->userID == uid; });
+      if (it != g->groupMembers.end())
+        g->groupMembers.erase(it);
+      cout << "✅ [Sync] User " << uid << " left group " << gid << endl;
+    }
+
+  } else if (tokens[0] == "SYNC_DELETE_GROUP") {
+    string gid = tokens[1];
+    if (groupMap.find(gid) != groupMap.end()) {
+      delete groupMap[gid];
+      groupMap.erase(gid);
+      cout << "✅ [Sync] Group " << gid << " deleted successfully" << endl;
+    }
+  } else if (tokens[0] == "SYNC_TRANSFER_ADMIN") {
+    string gid = tokens[1];
+    string newOwnerID = tokens[2];
+    string oldOwnerID = tokens[3];
+
+    Group *g = groupMap[gid];
+    if (g != nullptr) {
+      g->owner = userMap[newOwnerID];
+
+      auto it = find_if(g->groupMembers.begin(), g->groupMembers.end(),
+                        [&](User *u) { return u->userID == oldOwnerID; });
+      if (it != g->groupMembers.end())
+        g->groupMembers.erase(it);
+      cout << "✅ [Sync] Admin transferred from " << oldOwnerID << " to "
+           << newOwnerID << " in group " << gid << endl;
+    }
+  } else if (tokens[0] == "SYNC_UPLOAD_FILE") {
+    cout << "SYNC_UPLOAD_FILE" << endl;
+    string groupID = tokens[1];
+    int fileSize = stoi(tokens[2]);
+    string fileName = tokens[3];
+    int totalChunks = stoi(tokens[4]);
+    string fileHash = tokens[5];
+    string uploaderID = tokens[6];
+
+    // get uploader pointer
+    User *uploader = userMap[uploaderID];
+
+    vector<string> chunkHashes;
+    for (int i = 7; i < tokens.size(); ++i) {
+      chunkHashes.push_back(tokens[i]);
+    }
+
+    Group *group = groupMap[groupID];
+    if (group == NULL || uploader == NULL)
+      return; // basic safety
+
+    auto file = group->sharedFiles.find(fileHash);
+    if (file != group->sharedFiles.end()) {
+      // File already exists, just add uploader if not present
+      for (User *peer : file->second->peersHavingFile) {
+        if (peer->userID == uploaderID)
+          return; // already added
       }
-    } else if (tokens[0] == "SYNC_DELETE_GROUP") {
-      string gid = tokens[1];
-      if (groupMap.find(gid) != groupMap.end()) {
-        delete groupMap[gid];
-        groupMap.erase(gid);
-      }
-    } else if (tokens[0] == "SYNC_TRANSFER_ADMIN") {
-      string gid = tokens[1];
-      string newOwnerID = tokens[2];
-      string oldOwnerID = tokens[3];
+      file->second->peersHavingFile.push_back(uploader);
+      cout << "✅ [Sync] Existing file updated with new uploader " << uploaderID
+           << " in group " << groupID << endl;
+    } else {
+      FileMetadata *meta = new FileMetadata(fileSize, fileName, totalChunks,
+                                            fileHash, chunkHashes, uploader);
+      group->sharedFiles[fileHash] = meta;
+      cout << "✅ [Sync] New file " << fileName << " uploaded by " << uploaderID
+           << " synced in group " << groupID << endl;
+    }
 
-      Group *g = groupMap[gid];
-      if (g != nullptr) {
-        g->owner = userMap[newOwnerID];
+  } else if (tokens[0] == "SYNC_STOP_SHARE") {
+    string gid = tokens[1];
+    string fileHash = tokens[2];
 
-        auto it = find_if(g->groupMembers.begin(), g->groupMembers.end(),
-                          [&](User *u) { return u->userID == oldOwnerID; });
-        if (it != g->groupMembers.end())
-          g->groupMembers.erase(it);
+    lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
+    Group *g = groupMap[gid];
+    if (g != nullptr) {
+      if (g->sharedFiles.erase(fileHash) > 0) {
+        cout << "🧹 [Sync] File with hash " << fileHash
+             << " removed from group " << gid << endl;
       }
     }
+  } else if (tokens[0] == "SYNC_ADD_PEER") {
+    string gid = tokens[1];
+    string fileHash = tokens[2];
+    string userID = tokens[3];
+
+    lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
+    Group *g = groupMap[gid];
+    if (!g)
+      return;
+
+    auto it = g->sharedFiles.find(fileHash);
+    if (it == g->sharedFiles.end())
+      return;
+
+    FileMetadata *meta = it->second;
+    User *peer = userMap[userID];
+    if (!peer)
+      return;
+
+    auto it2 =
+        find(meta->peersHavingFile.begin(), meta->peersHavingFile.end(), peer);
+    if (it2 == meta->peersHavingFile.end()) {
+      meta->peersHavingFile.push_back(peer);
+      cout << "✅ [Sync] Peer " << userID << " added to file " << fileHash
+           << " in group " << gid << endl;
+    }
+  }
 
         // Future: handle other sync types here...
 

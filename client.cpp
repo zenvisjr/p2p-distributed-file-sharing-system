@@ -335,11 +335,11 @@ int main(int argc, char *argv[]) {
   //   arguments = ExtractArguments(command);
   //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
   //                          clientSocket);
-  //   sleep(6);
-  //   command = "upload_file hi.pdf g1";
-  //   arguments = ExtractArguments(command);
-  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-  //                          clientSocket);
+  //   // sleep(6);
+  //   // command = "upload_file hi.pdf g1";
+  //   // arguments = ExtractArguments(command);
+  //   // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //   //                        clientSocket);
 
   // } else if (clientPort == "6003") {
   //   cout << "Client is running on port 6003" << endl;
@@ -363,13 +363,13 @@ int main(int argc, char *argv[]) {
   //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
   //                          clientSocket);
 
-  //   sleep(6); // Wait for alice to accept and upload
+    // sleep(6); // Wait for alice to accept and upload
 
-  //   // Charlie downloads file
-  //   command = "download_file g1 hi.pdf /home/zenvis/yo";
-  //   arguments = ExtractArguments(command);
-  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-  //                          clientSocket);
+    // // Charlie downloads file
+    // command = "download_file g1 hi.pdf /home/zenvis/yo";
+    // arguments = ExtractArguments(command);
+    // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+    //                        clientSocket);
   // }
   // } else if (clientPort == "6004") {
   //   cout << "Client is running on port 6004" << endl;
@@ -1044,6 +1044,14 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
                        to_string(assignment.assignedPeer.port);
       peerToChunks[peerKey].push_back(chunkIndex);
     }
+
+    for (const auto &[peerKey, chunkIndices] : peerToChunks) {
+      cout << "Downloading chunks from " << peerKey << endl;
+      for (int chunkIndex : chunkIndices) {
+        cout << "chunk number " << chunkIndex << endl;
+        
+      }
+    }      
 
     // vector<string> downloadedChunks(totalChunks);
     vector<bool> isChunkDone(totalChunks, false);
