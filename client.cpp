@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <sstream>
 
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
 float K = 1.25f;        // 📌 Global multiplier for fair threshold
@@ -29,16 +30,12 @@ float betaa = .80; // Load penalty weight
 using namespace std;
 #define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
 #define MAX_CONNECTION 50
+vector<pair<string, string>> trackerList;
 
 queue<int> socketQueue;
 mutex queueMutex;
 condition_variable queueCV;
 const int THREAD_POOL_SIZE = 5;
-
-queue<string> commandQueue;
-mutex commandQueueMutex;
-condition_variable inputCV;
-bool shutdownInput = false; // To stop the input thread later if needed
 
 class FileMetadata {
 public:
@@ -163,7 +160,7 @@ int main(int argc, char *argv[]) {
   }
 
   // reading its content into buffer
-  char buffer[100];
+  char buffer[BUFFERSIZE];
   ssize_t bytesRead;
   string extract = "";
   while ((bytesRead = read(fd, buffer, sizeof(buffer) - 1)) >
@@ -184,14 +181,43 @@ int main(int argc, char *argv[]) {
   // cout<<extract<<endl;
 
   // extracting IP and port of tracker
-  string trackerIP, trackerPort;
-  for (int i = 0; i < extract.size(); i++) {
-    if (extract[i] == ':') {
-      trackerPort = extract.substr(i + 1);
-      break;
-    }
-    trackerIP += extract[i];
+  istringstream iss(extract);
+  string line;
+
+  while (getline(iss, line)) {
+    if (line.empty())
+      continue;
+    size_t delim = line.find(':');
+    if (delim == string::npos)
+      continue;
+    string ip = line.substr(0, delim);
+    string port = line.substr(delim + 1);
+    trackerList.emplace_back(ip, port);
   }
+
+  if (trackerList.empty()) {
+    cerr << "No valid trackers found in tracker_info.txt" << endl;
+    exit(1);
+  }
+
+  // Seed the random number generator
+  srand(time(NULL));
+  int randomIndex = rand() % trackerList.size();
+
+  if (clientPort == "6001") {
+    randomIndex = 0;
+  }
+
+  else if (clientPort == "6002") {
+    randomIndex = 1;
+  }
+
+  else if (clientPort == "6003") {
+    randomIndex = 2;
+  }
+
+  string trackerIP = trackerList[randomIndex].first;
+  string trackerPort = trackerList[randomIndex].second;
 
   // cout<<IPAddress<<endl;
   // cout<<portNumber<<endl;
@@ -235,116 +261,116 @@ int main(int argc, char *argv[]) {
   }
   cout << "Client is listening for request on " << cLientIP << ":" << clientPort
        << endl;
-  if (clientPort == "6001") {
-    cout << "Client is running on port 6001" << endl;
-    vector<string> arguments;
-    string command;
+  // if (clientPort == "6001") {
+  //   cout << "Client is running on port 6001" << endl;
+  //   vector<string> arguments;
+  //   string command;
 
-    // Alice creates user and logs in
-    command = "create_user alice password";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Alice creates user and logs in
+  //   command = "create_user alice password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    command = "login alice password";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   command = "login alice password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    // Alice creates group g1
-    command = "create_group g1";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Alice creates group g1
+  //   command = "create_group g1";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    sleep(7); // Give time for bob and charlie to send join requests
+  //   sleep(7); // Give time for bob and charlie to send join requests
 
-    // Alice accepts bob's request
-    command = "accept_request g1 bob";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Alice accepts bob's request
+  //   command = "accept_request g1 bob";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    // Alice accepts charlie's request
-    command = "accept_request g1 charlie";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Alice accepts charlie's request
+  //   command = "accept_request g1 charlie";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    // command = "accept_request g1 dave";
-    // arguments = ExtractArguments(command);
-    // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-    //                        clientSocket);
+  //   // command = "accept_request g1 dave";
+  //   // arguments = ExtractArguments(command);
+  //   // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //   //                        clientSocket);
 
-    // command = "accept_request g1 eve";
-    // arguments = ExtractArguments(command);
-    // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-    //                        clientSocket);
+  //   // command = "accept_request g1 eve";
+  //   // arguments = ExtractArguments(command);
+  //   // checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //   //                        clientSocket);
 
-    // Alice uploads file to group
-    command = "upload_file hi.pdf g1";
-    // command = "upload_file yo.mkv g1";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Alice uploads file to group
+  //   command = "upload_file hi.pdf g1";
+  //   // command = "upload_file yo.mkv g1";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-  } else if (clientPort == "6002") {
-    cout << "Client is running on port 6002" << endl;
-    vector<string> arguments;
-    string command;
+  // } else if (clientPort == "6002") {
+  //   cout << "Client is running on port 6002" << endl;
+  //   vector<string> arguments;
+  //   string command;
 
-    // Bob creates user and logs in
-    command = "create_user bob password";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Bob creates user and logs in
+  //   command = "create_user bob password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    command = "login bob password";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   command = "login bob password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    // Bob sends join request to group g1
-    command = "join_group g1";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
-    sleep(6);
-    command = "upload_file hi.pdf g1";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Bob sends join request to group g1
+  //   command = "join_group g1";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
+  //   sleep(6);
+  //   command = "upload_file hi.pdf g1";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-  } else if (clientPort == "6003") {
-    cout << "Client is running on port 6003" << endl;
-    vector<string> arguments;
-    string command;
+  // } else if (clientPort == "6003") {
+  //   cout << "Client is running on port 6003" << endl;
+  //   vector<string> arguments;
+  //   string command;
 
-    // Charlie creates user and logs in
-    command = "create_user charlie password";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Charlie creates user and logs in
+  //   command = "create_user charlie password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    command = "login charlie password";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   command = "login charlie password";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    // Charlie sends join request
-    command = "join_group g1";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
+  //   // Charlie sends join request
+  //   command = "join_group g1";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
 
-    sleep(6); // Wait for alice to accept and upload
+  //   sleep(6); // Wait for alice to accept and upload
 
-    // Charlie downloads file
-    command = "download_file g1 hi.pdf /home/zenvis/yo";
-    arguments = ExtractArguments(command);
-    checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
-                           clientSocket);
-  }
+  //   // Charlie downloads file
+  //   command = "download_file g1 hi.pdf /home/zenvis/yo";
+  //   arguments = ExtractArguments(command);
+  //   checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
+  //                          clientSocket);
+  // }
   // } else if (clientPort == "6004") {
   //   cout << "Client is running on port 6004" << endl;
   //   vector<string> arguments;
@@ -635,7 +661,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     string recvAck(bufferRecv, bytesRecieved);
 
     // checking if 1st char of string is #
-    if (recvAck[0] != '#') {
+    if (recvAck[0] != ' ') {
       cout << recvAck << endl;
     } else {
       // cout<<"Entering else"<<endl;
@@ -699,7 +725,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
       string recvAck(bufferRecv, bytesRecieved);
 
       // checking if 1st char of string is #
-      if (recvAck[0] != '#') {
+      if (recvAck[0] != ' ') {
         cout << recvAck << endl;
       } else {
         // cout<<"Entering else"<<endl;
@@ -798,7 +824,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 
     // cout<<recvAck<<endl;
     // checking if 1st char of string is #
-    if (recvAck[0] != '#') {
+    if (recvAck[0] != ' ') {
       cout << recvAck << endl;
     } else {
       // cout<<"Entering else"<<endl;

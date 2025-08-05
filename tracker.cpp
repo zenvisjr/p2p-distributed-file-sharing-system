@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <algorithm>
 #include <mutex>
+#include <fstream>
+#include <sstream>
 
 std::mutex userMutex;      // 🔒 [Phase 3]
 std::mutex groupMutex;     // 🔒 [Phase 3]
@@ -24,8 +26,11 @@ using namespace std;
 #define BUFFERSIZE 512*1024 // 512 KB buffer size for file transfer
 #define MAX_CONNECTION 50
 bool trackerRunning = true;
+int myTrackerIndex;
+vector<pair<string, int>> trackerList;
 
-string currentUSerIP, currentUserPort;
+string currentUSerIP,
+currentUserPort;
 
 class User
 {
@@ -143,6 +148,9 @@ void updatePeerStatsFromClient(const string &ip, int port, float score,
                                int served, double time);
 string serializePeerStats(const PeerStats &stats);
 vector<string> tokenizeVector(string &str);
+void syncListener(int syncPort);
+void sendSyncToPeers(const string &message, int selfIndex);
+void handleSyncConnection(int syncSocket);
 
 bool CreateUser(string userID, string password) {
   lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
@@ -214,6 +222,9 @@ bool LoginUser(string userID, string password, string currentUserIP, string curr
         }
 
         cout << userID << " is logged in now" << endl;
+        // 🔄 [Phase 3] Sync login status to all trackers
+        // string syncCommand = "SYNC_LOGIN_USER|" + userID;
+        // sendSyncCommandToPeers(syncCommand);
         return true;
     }
     else
@@ -248,6 +259,10 @@ bool LogoutUser(User *&currentThreadUser)
         // cout<<currentThreadUser->portNumber <<endl;
 
         cout << currentThreadUser->userID << " is logged out" << endl;
+
+        cout << "assessing currentThreadUser" << endl;
+        string syncCommand = "SYNC_LOGOUT_USER|" + currentThreadUser->userID;
+        sendSyncToPeers(syncCommand, myTrackerIndex);
 
         // mapping currentThreadUser to NULL as the cuer of current client is logged out
         currentThreadUser = NULL;
@@ -289,6 +304,11 @@ void CreateGroup(string groupID, User *&currentThreadUser, int clientSocket, int
 
         response = "Group created successfully";
         send(clientSocket, response.c_str(), response.size(), 0);
+
+        // 🔄 [Phase 3] Sync to all trackers
+        string syncCommand =
+            "SYNC_CREATE_GROUP|" + groupID + "|" + currentThreadUser->userID;
+        sendSyncToPeers(syncCommand, myTrackerIndex);
     }
 }
 
@@ -347,6 +367,11 @@ void JoinGroup(string groupID, User *&currentThreadUser, int clientSocket, int c
         cout << "Request sent to group owner for joining group" << endl;
         response = "Request Sent! Waiting For Owner's Approval...";
         send(clientSocket, response.c_str(), response.size(), 0);
+
+        // 🔄 [Phase 3] Sync join request to all trackers
+        string syncCommand =
+            "SYNC_JOIN_GROUP|" + groupID + "|" + currentThreadUser->userID;
+        sendSyncToPeers(syncCommand, myTrackerIndex);
     }
 }
 
@@ -400,13 +425,19 @@ void LeaveGroup(string groupID, User *&currentThreadUser, int clientSocket, int 
         send(clientSocket, response.c_str(), response.size(), 0);
     }
     // if member is present in group with no pending request then we check if member is admin of that group or not
-    else if (currentGroup->owner == NULL)
+    else if (currentGroup->owner == NULL || currentGroup->owner->userID != currentThreadUser->userID)
     {
         // finding index of the member in the list
         auto deleteIndex = find(currentGroup->groupMembers.begin(), currentGroup->groupMembers.end(), currentThreadUser);
 
         // deleting the index
         currentGroup->groupMembers.erase(deleteIndex);
+
+        sendSyncToPeers("SYNC_LEAVE|" + groupID + "|" +
+                            currentThreadUser->userID,
+                        myTrackerIndex);
+
+        
         cout << "You have been removed from the " << groupID << " group successfully." << endl;
         response = "Removed from Group Successfully!";
         send(clientSocket, response.c_str(), response.size(), 0);
@@ -416,6 +447,10 @@ void LeaveGroup(string groupID, User *&currentThreadUser, int clientSocket, int 
     {
         delete currentGroup;
         groupMap.erase(groupID);
+
+        sendSyncToPeers("SYNC_DELETE_GROUP|" + groupID, myTrackerIndex);
+
+
         cout << "The admin left the group so it has been deleted!" << endl;
         response = "Deleted Group Successfully!";
         send(clientSocket, response.c_str(), response.size(), 0);
@@ -423,28 +458,30 @@ void LeaveGroup(string groupID, User *&currentThreadUser, int clientSocket, int 
     // there are more than one members in your group
     else
     {
-        for (auto member : currentGroup->groupMembers)
-        {
-            if (member->userID != currentGroup->owner->userID)
-            {
-                currentGroup->owner = member;
-
-                // finding index of the member in the list
-                auto deleteIndex = find(currentGroup->groupMembers.begin(), currentGroup->groupMembers.end(), currentThreadUser);
-
-                // deleting the index
-                currentGroup->groupMembers.erase(deleteIndex);
-
-                // cout<<"current admin: "<<currentGroup->owner->userID<<endl;
-                cout << "Admin removed and ownership of group transferred to " << currentGroup->owner->userID << endl;
-                response = "Admin removed from Group Successfully!";
-                send(clientSocket, response.c_str(), response.size(), 0);
-                break;
-            }
-            // }
-            // Group* current = groupMap[groupID]
-            // cout<<"current admin: "<<current->owner->userID<<endl;
+      // select new owner
+      User *newOwner = nullptr;
+      for (auto member : currentGroup->groupMembers) {
+        if (member->userID != currentThreadUser->userID) {
+          newOwner = member;
+          break;
         }
+      }
+
+      currentGroup->owner = newOwner;
+
+      auto deleteIndex =
+          find(currentGroup->groupMembers.begin(),
+               currentGroup->groupMembers.end(), currentThreadUser);
+      currentGroup->groupMembers.erase(deleteIndex);
+
+        sendSyncToPeers("SYNC_TRANSFER_ADMIN|" + groupID + "|" +
+                            newOwner->userID + "|" + currentThreadUser->userID,
+                        myTrackerIndex);
+
+      cout << "Admin removed and ownership of group transferred to "
+           << newOwner->userID << endl;
+      response = "Admin removed from Group Successfully!";
+      send(clientSocket, response.c_str(), response.size(), 0);
     }
 }
 
@@ -532,6 +569,7 @@ void ListPendingRequest(string groupID, User *&currentThreadUser, int clientSock
     {
         cout << "Only Owner can see Pending Request!" << endl;
         response = "Only admin of the group is authorised to see pending request";
+        send(clientSocket, response.c_str(), response.size(), 0);
     }
     // seeing if pendingMembers is empty or not
     else if (currentGroup->pendingMembers.size() == 0)
@@ -552,7 +590,7 @@ void ListPendingRequest(string groupID, User *&currentThreadUser, int clientSock
         for (int i = 0; i < pendingListSize; i++)
         {
             cout << currentGroup->pendingMembers[i]->userID << endl;
-            response += '#' + currentGroup->pendingMembers[i]->userID;
+            response += ' ' + currentGroup->pendingMembers[i]->userID;
             // pendingUserId.push_back(currentGroup->pendingMembers[i]->userID);
         }
         // cout<<response<<endl;
@@ -596,13 +634,13 @@ void AcceptRequest(string groupID, string userID, User *&currentThreadUser, int 
     }
     else
     {
-        bool check = false;
+        bool isPending = false;
         // finding userID in pending list
         for (auto pendingUser : currentGroup->pendingMembers)
         {
             if (pendingUser->userID == userID)
             {
-                check = true;
+                isPending = true;
                 // add this user as a member to the group
                 currentGroup->groupMembers.push_back(pendingUser);
 
@@ -610,9 +648,16 @@ void AcceptRequest(string groupID, string userID, User *&currentThreadUser, int 
                 auto pendingIndex = find(currentGroup->pendingMembers.begin(), currentGroup->pendingMembers.end(), pendingUser);
                 currentGroup->pendingMembers.erase(pendingIndex);
 
+                // 🔁 [Phase 2] Sync accepted request to other trackers
+                string syncCommand =
+                    "SYNC_ACCEPT_REQUEST|" + groupID + "|" + userID;
+                sendSyncToPeers(syncCommand, myTrackerIndex); // ✨ already implemented
+
                 cout << "Accepted your request" << endl;
                 response = "Added to group successfully! WELCOME!!";
                 send(clientSocket, response.c_str(), response.size(), 0);
+
+
 
                 // replace userID with IP later when sending peer list to client
                 // string key = userID + ":" + userMap[userID]->portNumber;
@@ -632,7 +677,7 @@ void AcceptRequest(string groupID, string userID, User *&currentThreadUser, int 
                 break;
             }
         }
-        if (check == false)
+        if (isPending == false)
         {
             cout << userID << " is not in pending list of " << groupID << endl;
             response = "USER NOT IN PENDING LIST OF GROUP";
@@ -1308,12 +1353,20 @@ void clientHandler(int clientSocket)
             {
                 response = "User created successfully";
                 checkNoOfUser++;
+
+                string syncMsg = "SYNC_CREATE_USER|" + id + "|" + pswd;
+                sendSyncToPeers(syncMsg,
+                                myTrackerIndex); // index of this tracker
             }
             else
             {
                 response = "User already exists";
             }
             send(clientSocket, response.c_str(), response.size(), 0);
+
+            // now sync it with other trackers
+            // 📤 Send sync message
+
         }
         else if (command[0] == "login")
         {
@@ -1352,6 +1405,10 @@ void clientHandler(int clientSocket)
             {
                 response = "User login successfully";
                 checkNoOfLogin++;
+
+                // 🔄 [Phase 3] Sync login status to all trackers
+                string syncCommand = "SYNC_LOGIN_USER|" + id;
+                sendSyncToPeers(syncCommand, myTrackerIndex);
             }
             else
             {
@@ -1378,6 +1435,11 @@ void clientHandler(int clientSocket)
             if (status == true)
             {
                 response = "User logged out successfully";
+
+                // 🔄 [Phase 3] Sync logout status to all trackers
+                // cout << "assessing currentThreadUser"<<endl;
+                // string syncCommand = "SYNC_LOGOUT_USER|" + currentThreadUser->userID;
+                // sendSyncToPeers(syncCommand, myTrackerIndex);
             }
             else
             {
@@ -1531,47 +1593,74 @@ int main(int argc, char *argv[])
         perror("Usage : ./tracker tracker_info.txt tracker_no");
     }
     // extracting IP and port number of tracker from tracker_info.txt passed as argument
+    string trackerInfoFile = argv[1];
+     myTrackerIndex =
+        atoi(argv[2]); // This tracker's index (line number) in tracker_info.txt
+
+    // 🔁 Read all trackers from tracker_info.txt
+    // vector<pair<string, int>> allTrackers; // Stores (IP, Port)
+    ifstream file(trackerInfoFile);
+    string line;
+
+    while (getline(file, line)) {
+      size_t colonPos = line.find(':');
+      if (colonPos != string::npos) {
+        string ip = line.substr(0, colonPos);
+        int port = stoi(line.substr(colonPos + 1));
+        trackerList.emplace_back(ip, port);
+      }
+    }
+    file.close();
+
+    // ❌ Sanity check
+    if (myTrackerIndex < 0 || myTrackerIndex > trackerList.size()) {
+      cerr << "Invalid tracker index provided." << endl;
+      exit(1);
+    }
+
+    string IPAddress = trackerList[myTrackerIndex-1].first;
+    int portNumber = trackerList[myTrackerIndex-1].second;
 
     // opening the file tracker_info.txt
-    int fd = open(argv[1], O_RDONLY);
-    if (fd < 0)
-    {
-        perror("tracker_info.txt cant be opened due to unexpected error");
-        exit(1);
-    }
+    // int fd = open(argv[1], O_RDONLY);
+    // if (fd < 0)
+    // {
+    //     perror("tracker_info.txt cant be opened due to unexpected error");
+    //     exit(1);
+    // }
 
-    // reading its content into buffer
-    char buffer[100];
-    ssize_t bytesRead;
-    string extract = "";
-    while ((bytesRead = read(fd, buffer, sizeof(buffer) - 1)) > 0) // read() doesn't automatically null-terminate the buffer, so we create space for null
-    {
-        // adding null at end of buffer so that it is easy to work with string
-        buffer[bytesRead] = '\0';
-        extract += buffer;
-    }
+    // // reading its content into buffer
+    // char buffer[100];
+    // ssize_t bytesRead;
+    // string extract = "";
+    // while ((bytesRead = read(fd, buffer, sizeof(buffer) - 1)) > 0) // read() doesn't automatically null-terminate the buffer, so we create space for null
+    // {
+    //     // adding null at end of buffer so that it is easy to work with string
+    //     buffer[bytesRead] = '\0';
+    //     extract += buffer;
+    // }
 
-    if (bytesRead == -1)
-    {
-        perror("there was a error in reading tracker_info.txt");
-    }
+    // if (bytesRead == -1)
+    // {
+    //     perror("there was a error in reading tracker_info.txt");
+    // }
 
-    close(fd);
+    // close(fd);
     // cout<<extract<<endl;
 
     // extracting IP and port from extract string
-    string IPAddress, portNum;
-    for (int i = 0; i < extract.size(); i++)
-    {
-        if (extract[i] == ':')
-        {
-            portNum = extract.substr(i + 1);
-            break;
-        }
-        IPAddress += extract[i];
-    }
+    // string IPAddress, portNum;
+    // for (int i = 0; i < extract.size(); i++)
+    // {
+    //     if (extract[i] == ':')
+    //     {
+    //         portNum = extract.substr(i + 1);
+    //         break;
+    //     }
+    //     IPAddress += extract[i];
+    // }
 
-    int portNumber = atoi(portNum.c_str());
+    // int portNumber = atoi(portNum.c_str());
 
     // cout<<IPAddress<<endl;
     // cout<<portNumber<<endl;
@@ -1619,17 +1708,19 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    // Start listening for incoming connections, max connection allowed in queue is 50
-    int listenFD = listen(serverSocket, MAX_CONNECTION);
-    if (listenFD == -1)
-    {
-        perror("unable to listen to incomming connection on tracker");
-        exit(1);
+    // Start listening for incoming connections, max connection allowed in queue
+    // is 50 ✅ Start listening for connections
+    if (listen(serverSocket, MAX_CONNECTION) == -1) {
+      perror("Unable to listen for incoming connections");
+      exit(1);
     }
-    else
-    {
-        cout << "Tracker is listening for request on " << IPAddress << ":" << portNumber << endl;
-    }
+
+    cout << "🛰️  Tracker is listening at " << IPAddress << ":" << portNumber
+         << endl;
+
+    // 🧵 Launch tracker-to-tracker sync listener
+    int syncPort = portNumber + 1000;
+    thread(syncListener, syncPort).detach();
 
     // infinite loop to accept connection from various clients
     //  bool trackerRunning = true
@@ -1711,3 +1802,243 @@ vector<string> tokenizeVector(string &str) {
   }
   return tokens;
 }
+
+void syncListener(int syncPort) {
+  int syncSocket = socket(AF_INET, SOCK_STREAM, 0);
+  if (syncSocket == -1) {
+    perror("❌ Failed to create sync socket");
+    exit(1);
+  }
+
+  int opt = 1;
+  setsockopt(syncSocket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt,
+             sizeof(opt));
+
+  sockaddr_in syncAddr{};
+  syncAddr.sin_family = AF_INET;
+  syncAddr.sin_addr.s_addr = INADDR_ANY;
+  syncAddr.sin_port = htons(syncPort);
+
+  if (bind(syncSocket, (struct sockaddr *)&syncAddr, sizeof(syncAddr)) == -1) {
+    perror("❌ Failed to bind sync socket");
+    exit(1);
+  }
+
+  if (listen(syncSocket, 10) == -1) {
+    perror("❌ Failed to listen on sync port");
+    exit(1);
+  }
+
+  cout << "🔁 Sync listener running on port " << syncPort << endl;
+
+  while (true) {
+    sockaddr_in peerAddr{};
+    socklen_t len = sizeof(peerAddr);
+    int peerSock = accept(syncSocket, (struct sockaddr *)&peerAddr, &len);
+    if (peerSock == -1) {
+      perror("❌ Sync accept failed");
+      continue;
+    }
+
+    // 🧵 Spawn thread to handle this sync message
+    thread([peerSock]() {
+      handleSyncConnection(peerSock); // 🔄 Delegate to handler
+    }).detach();
+  }
+}
+
+// 🔄 [Sync] Send sync message to all other trackers
+void sendSyncToPeers(const string &message, int selfIndex) {
+  for (int i = 0; i < trackerList.size(); ++i) {
+    if (i == selfIndex-1)
+      continue; // Skip self
+
+    string peerIP = trackerList[i].first;
+    int peerPort = trackerList[i].second + 1000; // sync port
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+      cerr << "❌ [Sync] Failed to create socket to " << peerIP << ":"
+           << peerPort << endl;
+      continue;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(peerPort);
+    inet_pton(AF_INET, peerIP.c_str(), &addr.sin_addr);
+
+    // setting options for the serverSocket
+    int option = 1;
+    int setOption =
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                   &option, sizeof(option));
+    if (setOption == -1) {
+      perror("unable to set options for sync tracker socket");
+      exit(1);
+    }
+
+    if (connect(sock, (sockaddr *)&addr, sizeof(addr)) < 0) {
+      cerr << "❌ [Sync] Failed to connect to " << peerIP << ":" << peerPort
+           << endl;
+      close(sock);
+      continue;
+    }
+
+    send(sock, message.c_str(), message.size(), 0); // no \n, just raw data
+    close(sock);
+    cout << "📤 [Sync] Sent to " << peerIP << ":" << peerPort << " → "
+         << message << endl;
+  }
+}
+
+// 🔄 [Sync Handler] Parse and apply sync command
+void handleSyncConnection(int syncSocket) {
+  char buffer[BUFFERSIZE];
+  int bytesRead = read(syncSocket, buffer, sizeof(buffer));
+  if (bytesRead <= 0) {
+    close(syncSocket);
+    return;
+  }
+
+  string syncMsg(buffer, bytesRead);
+  cout << "📥 Received sync command: " << syncMsg << endl;
+
+  vector<string> tokens;
+  stringstream ss(syncMsg);
+  string part;
+  while (getline(ss, part, '|'))
+    tokens.push_back(part);
+
+  if (tokens.empty()) {
+    close(syncSocket);
+    return;
+  }
+
+  string command = tokens[0];
+
+  if (command == "SYNC_CREATE_USER" && tokens.size() == 3) {
+    string userID = tokens[1];
+    string password = tokens[2];
+
+    lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
+    if (userMap.find(userID) == userMap.end()) {
+      User *newUser = new User(userID, password);
+      userMap[userID] = newUser;
+      cout << "✅ [Sync] User created via sync: " << userID << endl;
+    }
+  } else if (command == "SYNC_LOGIN_USER" && tokens.size() == 2) {
+    string userID = tokens[1];
+
+    lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
+    if (userMap.find(userID) != userMap.end()) {
+        userMap[userID]->isLoggedIn = true;
+        cout << "[Sync] User login synced: " << userID << endl;
+      } else {
+        cout << "[Sync] Cannot sync login, user not found: " << userID << endl;
+      }
+    } else if (command == "SYNC_LOGOUT_USER" && tokens.size() == 2) {
+        string userID = tokens[1];
+
+        lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
+        if (userMap.find(userID) != userMap.end()) {
+          userMap[userID]->isLoggedIn = false;
+          userMap[userID]->IpAddress = "";
+          userMap[userID]->portNumber = "";
+          cout << "[Sync] User logout synced: " << userID << endl;
+        } else {
+          cout << "[Sync] Cannot sync logout, user not found: " << userID
+               << endl;
+        }
+    } else if (command == "SYNC_CREATE_GROUP" && tokens.size() == 3) {
+      string groupID = tokens[1];
+      string ownerID = tokens[2];
+
+    //   lock_guard<mutex> userLock(userMutex);   // 🔒 To access userMap
+      lock_guard<mutex> groupLock(groupMutex); // 🔒 To modify groupMap
+
+    //   if (userMap.find(ownerID) == userMap.end()) {
+    //     cout << "❌ [Sync] Cannot create group, owner user not found: "
+    //          << ownerID << endl;
+    //   } else if (groupMap.find(groupID) != groupMap.end()) {
+    //     cout << "⚠️ [Sync] Group already exists: " << groupID << endl;
+    //   } else {
+        User *owner = userMap[ownerID];
+        Group *newGroup = new Group(groupID, owner);
+        groupMap[groupID] = newGroup;
+        cout << "✅ [Sync] Group created via sync: " << groupID << " by "
+             << ownerID << endl;
+    //   }
+    } else if (command == "SYNC_JOIN_GROUP" && tokens.size() == 3) {
+      string groupID = tokens[1];
+      string userID = tokens[2];
+
+      // 🔒 [Phase 3] Just directly update state assuming all validations passed
+      // on sender
+      lock_guard<mutex> groupLock(groupMutex);
+      lock_guard<mutex> userLock(userMutex);
+
+      Group *group = groupMap[groupID];
+      User *user = userMap[userID];
+
+      group->pendingMembers.push_back(user);
+      cout << "✅ [Sync] Join request synced for user " << userID
+           << " to group " << groupID << endl;
+
+    } else if (command == "SYNC_ACCEPT_REQUEST") {
+      string groupID = tokens[1];
+      string userID = tokens[2];
+
+      lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
+      Group *grp = groupMap[groupID];
+      if (!grp)
+        return;
+
+      User *pendingUser = userMap[userID];
+      if (!pendingUser)
+        return;
+
+      // Remove from pending
+      auto it = find(grp->pendingMembers.begin(), grp->pendingMembers.end(),
+                     pendingUser);
+      if (it != grp->pendingMembers.end())
+        grp->pendingMembers.erase(it);
+
+      // Add to members
+      grp->groupMembers.push_back(pendingUser);
+    } else if (tokens[0] == "SYNC_LEAVE") {
+      string gid = tokens[1];
+      string uid = tokens[2];
+      Group *g = groupMap[gid];
+      if (g != nullptr) {
+        auto it = find_if(g->groupMembers.begin(), g->groupMembers.end(),
+                          [&](User *u) { return u->userID == uid; });
+        if (it != g->groupMembers.end())
+          g->groupMembers.erase(it);
+      }
+    } else if (tokens[0] == "SYNC_DELETE_GROUP") {
+      string gid = tokens[1];
+      if (groupMap.find(gid) != groupMap.end()) {
+        delete groupMap[gid];
+        groupMap.erase(gid);
+      }
+    } else if (tokens[0] == "SYNC_TRANSFER_ADMIN") {
+      string gid = tokens[1];
+      string newOwnerID = tokens[2];
+      string oldOwnerID = tokens[3];
+
+      Group *g = groupMap[gid];
+      if (g != nullptr) {
+        g->owner = userMap[newOwnerID];
+
+        auto it = find_if(g->groupMembers.begin(), g->groupMembers.end(),
+                          [&](User *u) { return u->userID == oldOwnerID; });
+        if (it != g->groupMembers.end())
+          g->groupMembers.erase(it);
+      }
+    }
+
+        // Future: handle other sync types here...
+
+        close(syncSocket);
+    }
