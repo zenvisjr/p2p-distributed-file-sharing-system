@@ -155,6 +155,7 @@ void syncListener(int syncPort);
 void sendSyncToPeers(const string &message, int selfIndex);
 void handleSyncConnection(int syncSocket);
 void notifyLoadBalancer(const string &command);
+void registerToLoadBalancer(string tracker_ip, int tracker_port);
 
 bool CreateUser(string userID, string password) {
   lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
@@ -1790,45 +1791,46 @@ int main(int argc, char *argv[])
     int syncPort = portNumber + 1000;
     thread(syncListener, syncPort).detach();
 
+    registerToLoadBalancer(IPAddress, portNumber);
+
     // infinite loop to accept connection from various clients
     //  bool trackerRunning = true
 
     while (true)
     // signal(SIGINT, SIG_IGN); // Ignore Ctrl+C
     {
-        // cout<<"again entering while loop for next command"<<endl;
-        // Data structure to hold client's address information
-        sockaddr_in clientAddress;
-        socklen_t clientLength = sizeof(clientAddress);
+      // cout<<"again entering while loop for next command"<<endl;
+      // Data structure to hold client's address information
+      sockaddr_in clientAddress;
+      socklen_t clientLength = sizeof(clientAddress);
 
-        // Accept an incoming connection from a client
-        int clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddress, &clientLength);
-        if (clientSocket == -1)
-        {
-            perror("unable to accept incomming connection from client");
-            continue;
-        } else if (clientSocket > 0) {
-          
-          notifyLoadBalancer("INCREMENT");
-          cout << "Accepted Connection from Client" << endl;
-          
-        }
+      // Accept an incoming connection from a client
+      int clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddress,
+                                &clientLength);
+      if (clientSocket == -1) {
+        perror("unable to accept incomming connection from client");
+        continue;
+      } else if (clientSocket > 0) {
 
-        try
-        {
-            // creating a new thread object everytime a new request from cllient is accepted
-            thread clientThread(clientHandler, clientSocket);
-            // cout<<"after making a thread and sending it to client handler"<<endl;
+        notifyLoadBalancer("INCREMENT");
+        cout << "Accepted Connection from Client" << endl;
+      }
 
-            // Detaches the thread from main() so it can run independently and clean up themselves automatically when they finish execution
-            clientThread.detach();
-        }
-        catch (system_error &e)
-        {
-            cerr << "Unable to create thread for client request: " << e.what() << endl;
-        }
+      try {
+        // creating a new thread object everytime a new request from cllient is
+        // accepted
+        thread clientThread(clientHandler, clientSocket);
+        // cout<<"after making a thread and sending it to client handler"<<endl;
 
-        // cout<<"after completing command"<<endl;
+        // Detaches the thread from main() so it can run independently and clean
+        // up themselves automatically when they finish execution
+        clientThread.detach();
+      } catch (system_error &e) {
+        cerr << "Unable to create thread for client request: " << e.what()
+             << endl;
+      }
+
+      // cout<<"after completing command"<<endl;
     }
 
     // Close the server socket
@@ -1935,7 +1937,7 @@ void sendSyncToPeers(const string &message, int selfIndex) {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(peerPort);
-    inet_pton(AF_INET, peerIP.c_str(), &addr.sin_addr);
+    inet_pton(AF_INET, peerIP.c_str(    ), &addr.sin_addr);
 
     // setting options for the serverSocket
     int option = 1;
@@ -2307,4 +2309,62 @@ void notifyLoadBalancer(const string &command) {
     }
 
     close(sock);
+}
+
+// tracker.cpp
+void registerToLoadBalancer(string tracker_ip, int tracker_port) {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    cerr << "❌ Failed to create socket to " << loadBalancerIP << ":"
+         << loadBalancerPort << endl;
+    return;
+  }
+
+  // Optional but good to have — prevent TIME_WAIT socket reuse issues
+  int option = 1;
+  if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &option,
+                 sizeof(option)) == -1) {
+    cerr << "❌ [Tracker] unable to set socket options" << endl;
+    close(sock); // close before returning
+    return;
+  }
+
+  sockaddr_in lb_addr;
+  lb_addr.sin_family = AF_INET;
+  lb_addr.sin_port = htons(loadBalancerPort);
+  if (inet_pton(AF_INET, loadBalancerIP.c_str(), &lb_addr.sin_addr) <= 0) {
+    cerr << "❌ [Tracker] Invalid LB IP address format" << endl;
+    close(sock);
+    return;
+  }
+
+  if (connect(sock, (struct sockaddr *)&lb_addr, sizeof(lb_addr)) < 0) {
+    cerr << "❌ [Tracker] Failed to connect to Load Balancer" << endl;
+    close(sock);
+    return;
+  }
+
+  // Construct and send REGISTER message
+  string message = "REGISTER " + tracker_ip + " " + to_string(tracker_port) +
+                   "\n"; // add newline for delimiter
+  send(sock, message.c_str(), message.size(), 0);
+
+  // Read response
+  char buffer[1024] = {0};
+  int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
+  if (bytes > 0) {
+    buffer[bytes] = '\0';
+    string response(buffer);
+    cout << "📨 [Tracker] LB Response: " << response << endl;
+
+    if (response.find("SUCCESS") != string::npos) {
+      cout << "✅ [Tracker] Registered successfully" << endl;
+    } else {
+      cout << "❌ [Tracker] Registration failed" << endl;
+    }
+  } else {
+    cerr << "❌ [Tracker] No response from Load Balancer" << endl;
+  }
+
+  close(sock);
 }

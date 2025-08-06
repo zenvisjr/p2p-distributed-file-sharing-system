@@ -54,7 +54,28 @@ void handleConnection(int clientSocket) {
 
   lock_guard<mutex> lock(heapMutex);
 
-  if (arguments[0] == "GET_TRACKER") {
+  if (arguments[0] == "REGISTER") {
+    if (arguments.size() < 3) {
+      cerr << "❌ [Load Balancer] Invalid REGISTER format" << endl;
+      send(clientSocket, "ERROR: Invalid REGISTER format\n", 31, 0);
+      close(clientSocket);
+      return;
+    }
+
+    string ip = arguments[1];
+    int port = stoi(arguments[2]);
+    string key = ip + ":" + to_string(port);
+
+    if (trackerMap.find(key) == trackerMap.end()) {
+      trackerMap[key] = {ip, port, 0};
+      minHeap.push({ip, port, 0});
+      cout << "✅ [Load Balancer] Tracker registered: " << ip << ":" << port << endl;
+    } else {
+      cout << "⚠️ [Load Balancer] Tracker already registered: " << ip << ":" << port << endl;
+    }
+
+    send(clientSocket, "SUCCESS\n", 8, 0);
+  } else if (arguments[0] == "GET_TRACKER") {
     cout << "[Load Balancer] received GET_TRACKER command from client" << endl;
 
     if (minHeap.empty()) {
@@ -89,7 +110,7 @@ void handleConnection(int clientSocket) {
       }
       minHeap = std::move(newHeap);
 
-      cout << "🗑️ Removed dead tracker " << key << " from Load Balancer\n";
+      cout << "🗑️ Removed dead tracker " << ip << ":" << port << " from Load Balancer\n";
       string response = "REMOVED\n";
       send(clientSocket, response.c_str(), response.size(), 0);
     } else {
@@ -239,7 +260,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  preloadTrackersFromFile(argv[1]);
+  // preloadTrackersFromFile(argv[1]);
   startLoadBalancer();
   // thread monitorThread(MonitorTrackerHealth);
   // monitorThread.detach();
