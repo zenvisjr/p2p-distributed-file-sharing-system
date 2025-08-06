@@ -1314,6 +1314,7 @@ void clientHandler(int clientSocket)
 
     while (trackerRunning)
     {
+        cout<<"tracker is running"<<endl;
 
         char prefixBuffer[8] = {0};
         int prefixBytes = recv(clientSocket, prefixBuffer, 7, MSG_PEEK); // Look ahead
@@ -1371,6 +1372,7 @@ void clientHandler(int clientSocket)
 
             // Safely converting char array to string
             string commandRecieved(buffer, bytesReceived);
+            cout<<"commandRecieved: "<<commandRecieved<<endl;
             command = ExtractArguments(commandRecieved);
         }
 
@@ -1633,6 +1635,7 @@ void clientHandler(int clientSocket)
             // exit(0);
             // break;
         } else if (command[0] == "PING") {
+        //   cout<<"\nPING received from client "<<endl;
           string response = "PONG";
         //   cout << "\nPONG sent to client "<< endl;
           send(clientSocket, response.c_str(), response.size(), 0);
@@ -1820,7 +1823,7 @@ int main(int argc, char *argv[])
         // creating a new thread object everytime a new request from cllient is
         // accepted
         thread clientThread(clientHandler, clientSocket);
-        // cout<<"after making a thread and sending it to client handler"<<endl;
+        cout<<"after making a thread and sending it to client handler"<<endl;
 
         // Detaches the thread from main() so it can run independently and clean
         // up themselves automatically when they finish execution

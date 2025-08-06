@@ -29,6 +29,7 @@ float alpha = .20;              // Score weight
 float betaa = .80;              // Load penalty weight
 std::atomic<bool> trackerAlive; // Tracker health check
 int myTrackerIndex;
+int maxRetries = 3;
 
 using namespace std;
 #define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
@@ -231,15 +232,28 @@ int main(int argc, char *argv[]) {
   // string trackerPort = trackerList[myTrackerIndex].second;
   // trackerPort = stoi(trackerPort);
 
+  // Step 1: Retry getting tracker from Load Balancer
+  int attempt = 0;
+  bool success = false;
+
   string trackerIP;
   int trackerPort;
 
-  // string loadBalancerIP = "127.0.0.1"; // change to your actual LB IP
-  // int loadBalancerPort = 9000;         // change to your actual LB port
+  while (attempt < maxRetries) {
+    if (GetBestTrackerFromLoadBalancer(trackerIP, trackerPort)) {
+      success = true;
+      break;
+    } else {
+      cerr << "⚠️ Failed to get tracker from LB. Retrying (" << (attempt + 1)
+           << "/" << maxRetries << ")..." << endl;
+      this_thread::sleep_for(chrono::seconds(1));
+      attempt++;
+    }
+  }
 
-  cout<<"just before GetBestTrackerFromLoadBalancer"<<endl;
-  if (!GetBestTrackerFromLoadBalancer(trackerIP, trackerPort)) {
-    cerr << "❌ Unable to get tracker from load balancer. Exiting." << endl;
+  if (!success) {
+    cerr << "❌ Unable to get tracker from Load Balancer after " << maxRetries
+         << " attempts. Exiting." << endl;
     exit(1);
   }
 
@@ -248,49 +262,70 @@ int main(int argc, char *argv[]) {
 
   // cout<<IPAddress<<endl;
   // cout<<portNumber<<endl;
-  // Create a new socket on client side
-  int domain = AF_INET;
-  int type = SOCK_STREAM;
-  int protocol = 0;
-  int clientSocket = socket(domain, type, protocol);
-  if (clientSocket == -1) {
-    perror("unable to create a socket at client side");
-    exit(1);
+
+  // Step 2: Create socket and connect with retry
+  int clientSocket;
+  attempt = 0;
+  success = false;
+
+  while (attempt < maxRetries) {
+    // Create a new socket on client side
+    int domain = AF_INET;
+    int type = SOCK_STREAM;
+    int protocol = 0;
+    int clientSocket = socket(domain, type, protocol);
+    if (clientSocket == -1) {
+      perror("unable to create a socket at client side");
+      exit(1);
+    }
+    // setting options for the serverSocket
+    int option = 1;
+    int setOption =
+        setsockopt(clientSocket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                   &option, sizeof(option));
+    if (setOption == -1) {
+      perror("unable to create a socket at server side");
+      exit(1);
+    }
+
+    // Define the server's address structure
+    int trackerPortNumber = trackerPort;
+    // int trackerPortNumber = 9000;
+
+    sockaddr_in serverAddress;
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_port = htons(trackerPortNumber);
+    inet_pton(AF_INET, trackerIP.c_str(),
+              &serverAddress.sin_addr); // Convert IP address to byte form
+
+    // Connect to the server
+    int connectFD = connect(clientSocket, (struct sockaddr *)&serverAddress,
+                            sizeof(serverAddress));
+    if (connectFD == -1) {
+      cerr << "⚠️ Failed to connect to tracker " << trackerIP << ":"
+           << trackerPort << " (Attempt " << (attempt + 1) << "/" << maxRetries
+           << ")" << endl;
+      close(clientSocket);
+      this_thread::sleep_for(chrono::seconds(1));
+      attempt++;
+    } else {
+      success = true;
+      cout << "Client is connected with tracker on " << trackerIP << ":"
+           << trackerPortNumber << endl;
+      break;
+    }
   }
-  // setting options for the serverSocket
-  int option = 1;
-  int setOption =
-      setsockopt(clientSocket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &option,
-                 sizeof(option));
-  if (setOption == -1) {
-    perror("unable to create a socket at server side");
+  if (!success) {
+    cerr << "❌ Unable to connect to tracker after " << maxRetries
+         << " attempts. Exiting." << endl;
     exit(1);
   }
 
-  // Define the server's address structure
-  int trackerPortNumber = trackerPort;
-  // int trackerPortNumber = 9000;
-
-  sockaddr_in serverAddress;
-  serverAddress.sin_family = AF_INET;
-  serverAddress.sin_port = htons(trackerPortNumber);
-  inet_pton(AF_INET, trackerIP.c_str(),
-            &serverAddress.sin_addr); // Convert IP address to byte form
-
-  // Connect to the server
-  int connectFD = connect(clientSocket, (struct sockaddr *)&serverAddress,
-                          sizeof(serverAddress));
-  if (connectFD == -1) {
-    perror("unable to connect to the server");
-    exit(1);
-  } else {
-    cout << "Client is connected with tracker on " << trackerIP << ":"
-         << trackerPortNumber << endl;
-  }
-  cout << "Client is listening for request on " << cLientIP << ":" << clientPort
-       << endl;
+  // cout << "Client is listening for request on " << cLientIP << ":"
+  //      << clientPort << endl;
   trackerAlive = true;
-  thread hb(StartHeartbeatMonitor, clientSocket, trackerIP, to_string(trackerPort));
+  thread hb(StartHeartbeatMonitor, clientSocket, trackerIP,
+            to_string(trackerPort));
   hb.detach();
   // Let it run in background
   // if (clientPort == "6001") {
@@ -2273,13 +2308,15 @@ void ChunkWorkerThread() {
 // Send heartbeat (PING) and wait for PONG
 void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
                            const string &currentTrackerPort) {
-cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
-         << currentTrackerPort << endl;
+  cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
+       << currentTrackerPort << endl;
+  this_thread::sleep_for(chrono::seconds(1));
+
   while (true) {
     // Send PING
     string pingMsg = "PING";
     // cout << "\nSending PING to tracker " << currentTrackerIP << ":"
-        //  << currentTrackerPort << endl;
+    //  << currentTrackerPort << endl;
     send(clientSocket, pingMsg.c_str(), pingMsg.size(), 0);
 
     // Wait for response with timeout using future
@@ -2293,8 +2330,8 @@ cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
       if (bytes > 0) {
         string response(buffer, bytes);
         if (response == "PONG") {
-          // cout << "\n✅ PONG received from tracker " << currentTrackerIP << ":"
-          //      << currentTrackerPort << endl;
+          // cout << "\n✅ PONG received from tracker " << currentTrackerIP <<
+              //  ":" << currentTrackerPort << endl;
           // All good
           this_thread::sleep_for(chrono::seconds(10));
           continue;
@@ -2320,26 +2357,24 @@ cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
             &lbAddr.sin_addr); // set globally
 
   if (connect(lbSock, (sockaddr *)&lbAddr, sizeof(lbAddr)) == 0) {
-    string msg =
-        "REMOVE " + currentTrackerIP + " " + currentTrackerPort;
+    string msg = "REMOVE " + currentTrackerIP + " " + currentTrackerPort;
     send(lbSock, msg.c_str(), msg.size(), 0);
     cout << "📉 Sent REMOVE for dead tracker to Load Balancer\n";
   } else {
     cerr << "❌ Failed to connect to Load Balancer for REMOVE\n";
   }
 
-    // ✅ Wait for ACK or REMOVED
-    char buffer[1024];
-    ssize_t bytesRead = recv(lbSock, buffer, sizeof(buffer), 0);
-    if (bytesRead > 0) {
-      string response(buffer, bytesRead);
-      cout << "📩 Load Balancer response: " << response;
-    } else {
-      cerr << "⚠️ No response from Load Balancer after sending update\n";
-    }
+  // ✅ Wait for ACK or REMOVED
+  char buffer[1024];
+  ssize_t bytesRead = recv(lbSock, buffer, sizeof(buffer), 0);
+  if (bytesRead > 0) {
+    string response(buffer, bytesRead);
+    cout << "📩 Load Balancer response: " << response;
+  } else {
+    cerr << "⚠️ No response from Load Balancer after sending update\n";
+  }
 
-    close(lbSock);
-
+  close(lbSock);
 
   // cout << "Enter commands:> ";
 }
@@ -2353,31 +2388,33 @@ bool ReconnectToAnotherTracker(int &clientSocket) {
     return false;
 
   int newSocket = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in serv_addr;
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(trackerPort);
-    inet_pton(AF_INET, trackerIP.c_str(), &serv_addr.sin_addr);
+  sockaddr_in serv_addr;
+  serv_addr.sin_family = AF_INET;
+  serv_addr.sin_port = htons(trackerPort);
+  inet_pton(AF_INET, trackerIP.c_str(), &serv_addr.sin_addr);
 
-    if (connect(newSocket, (sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) {
-      close(clientSocket); // close old socket
-      clientSocket = newSocket;
-      trackerAlive = true;
+  if (connect(newSocket, (sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) {
+    close(clientSocket); // close old socket
+    clientSocket = newSocket;
+    trackerAlive = true;
 
-      // Restart heartbeat
-      thread t(StartHeartbeatMonitor, clientSocket, trackerIP, to_string(trackerPort));
-      t.detach();
+    // Restart heartbeat
+    thread t(StartHeartbeatMonitor, clientSocket, trackerIP,
+             to_string(trackerPort));
+    t.detach();
 
-      cout << "✅ Reconnected to tracker: " << trackerIP << ":" << trackerPort << endl;
-      return true;
-    }
+    cout << "✅ Reconnected to tracker: " << trackerIP << ":" << trackerPort
+         << endl;
+    return true;
+  }
 
-    close(newSocket);
-    return false;
+  close(newSocket);
+  return false;
 }
 // 🔁 [Multi-Tracker Load Balancing] Get best tracker from Load Balancer
 bool GetBestTrackerFromLoadBalancer(string &trackerIP, int &trackerPort) {
 
-  cout<<"entering GetBestTrackerFromLoadBalancer"<<endl;
+  cout << "entering GetBestTrackerFromLoadBalancer" << endl;
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
     cerr << "❌ Failed to create socket to load balancer" << endl;
@@ -2400,11 +2437,11 @@ bool GetBestTrackerFromLoadBalancer(string &trackerIP, int &trackerPort) {
     return false;
   }
 
-  cout<<"connected to load balancer"<<endl;
+  cout << "connected to load balancer" << endl;
 
   string request = "GET_TRACKER";
   send(sock, request.c_str(), request.size(), 0);
-  cout<<"sent GET_TRACKER request to load balancer"<<endl;
+  cout << "sent GET_TRACKER request to load balancer" << endl;
 
   char buffer[BUFFERSIZE];
   ssize_t bytesRead = recv(sock, buffer, sizeof(buffer), 0);
@@ -2414,7 +2451,7 @@ bool GetBestTrackerFromLoadBalancer(string &trackerIP, int &trackerPort) {
     cerr << "❌ No response from load balancer" << endl;
     return false;
   }
-  cout<<"bytesRead: "<<bytesRead<<endl;
+  cout << "bytesRead: " << bytesRead << endl;
 
   string response(buffer, bytesRead);
   if (response == "NO_TRACKERS\n") {
@@ -2422,10 +2459,11 @@ bool GetBestTrackerFromLoadBalancer(string &trackerIP, int &trackerPort) {
     return false;
   }
 
-  cout<<"response: "<<response<<endl;
+  cout << "response: " << response << endl;
 
   istringstream iss(response);
   iss >> trackerIP >> trackerPort;
-  cout<<"trackerIP: "<<trackerIP<<", trackerPort: "<<trackerPort<<endl;
+  cout << "trackerIP: " << trackerIP << ", trackerPort: " << trackerPort
+       << endl;
   return true;
 }
