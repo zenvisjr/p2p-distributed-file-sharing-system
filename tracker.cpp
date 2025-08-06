@@ -26,6 +26,8 @@ using namespace std;
 
 #define BUFFERSIZE 512*1024 // 512 KB buffer size for file transfer
 #define MAX_CONNECTION 50
+string loadBalancerIP = "127.0.0.1";
+int loadBalancerPort = 9000;
 bool trackerRunning = true;
 int myTrackerIndex;
 vector<pair<string, int>> trackerList;
@@ -152,6 +154,7 @@ vector<string> tokenizeVector(string &str);
 void syncListener(int syncPort);
 void sendSyncToPeers(const string &message, int selfIndex);
 void handleSyncConnection(int syncSocket);
+void notifyLoadBalancer(const string &command);
 
 bool CreateUser(string userID, string password) {
   lock_guard<mutex> lock(userMutex); // 🔒 [Phase 3]
@@ -1630,7 +1633,7 @@ void clientHandler(int clientSocket)
             // break;
         } else if (command[0] == "PING") {
           string response = "PONG";
-          cout << "\nPONG sent to client "<< endl;
+        //   cout << "\nPONG sent to client "<< endl;
           send(clientSocket, response.c_str(), response.size(), 0);
           continue;
         }
@@ -1647,6 +1650,7 @@ void clientHandler(int clientSocket)
         // return 0;
     }
     close(clientSocket);
+    notifyLoadBalancer("DECREMENT");
 }
 
 int main(int argc, char *argv[])
@@ -1803,10 +1807,11 @@ int main(int argc, char *argv[])
         {
             perror("unable to accept incomming connection from client");
             continue;
-        }
-        else if (clientSocket > 0)
-        {
-            cout << "Accepted Connection from Client" << endl;
+        } else if (clientSocket > 0) {
+          
+          notifyLoadBalancer("INCREMENT");
+          cout << "Accepted Connection from Client" << endl;
+          
         }
 
         try
@@ -2264,4 +2269,42 @@ void handleSyncConnection(int syncSocket) {
         // Future: handle other sync types here...
 
         close(syncSocket);
+}
+
+void notifyLoadBalancer(const string &command) {
+    string trackerIP = trackerList[myTrackerIndex-1].first;
+    int trackerPort = trackerList[myTrackerIndex-1].second;
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+    perror("❌ [Tracker] Failed to create socket for Load Balancer");
+    return;
     }
+
+    sockaddr_in lbAddr{};
+    lbAddr.sin_family = AF_INET;
+    lbAddr.sin_port = htons(loadBalancerPort);
+    if (inet_pton(AF_INET, loadBalancerIP.c_str(), &lbAddr.sin_addr) <= 0) {
+    perror("❌ [Tracker] Invalid Load Balancer address");
+    close(sock);
+    return;
+    }
+
+    if (connect(sock, (struct sockaddr *)&lbAddr, sizeof(lbAddr)) < 0) {
+    perror("❌ [Tracker] Failed to connect to Load Balancer");
+    close(sock);
+    return;
+    }
+
+    string message = command + " " + trackerIP + " " + to_string(trackerPort);
+    send(sock, message.c_str(), message.size(), 0);
+
+    char buffer[1024];
+    int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
+    if (bytes > 0) {
+    buffer[bytes] = '\0';
+    cout << "✅ [Tracker] LB Response: " << buffer << endl;
+    }
+
+    close(sock);
+}

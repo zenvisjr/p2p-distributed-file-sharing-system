@@ -34,6 +34,8 @@ using namespace std;
 #define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
 #define MAX_CONNECTION 50
 vector<pair<string, string>> trackerList;
+string loadBalancerIP = "127.0.0.1"; // change to your actual LB IP
+int loadBalancerPort = 9000;         // change to your actual LB port
 
 queue<int> socketQueue;
 mutex queueMutex;
@@ -128,10 +130,14 @@ void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
                            const string &currentTrackerPort);
 
 bool ReconnectToAnotherTracker(int &clientSocket, int failedTrackerIndex);
+bool GetBestTrackerFromLoadBalancer(const string &lbIP, int lbPort,
+                                    string &trackerIP,
+                                    int &trackerPort);
 int main(int argc, char *argv[]) {
   // checking if correct no of arguments were passed
-  if (argc != 3) {
-    perror("Usage : ./client <IP>:<PORT> tracker_info.txt");
+  if (argc != 2) {
+    perror("Usage : ./client <IP>:<PORT>");
+    exit(1);
   }
 
   // extracting IP and port number of client passed as 2nd argument
@@ -159,72 +165,89 @@ int main(int argc, char *argv[]) {
   // extracting IP and port number of tracker from tracker_info.txt passed as
   // 3rd argument
 
-  // opening the file tracker_info.txt
-  int fd = open(argv[2], O_RDONLY);
-  if (fd < 0) {
-    perror("tracker_info.txt cant be opened due to unexpected error");
+  // // opening the file tracker_info.txt
+  // int fd = open(argv[2], O_RDONLY);
+  // if (fd < 0) {
+  //   perror("tracker_info.txt cant be opened due to unexpected error");
+  //   exit(1);
+  // }
+
+  // // reading its content into buffer
+  // char buffer[BUFFERSIZE];
+  // ssize_t bytesRead;
+  // string extract = "";
+  // while ((bytesRead = read(fd, buffer, sizeof(buffer) - 1)) >
+  //        0) // read() doesn't automatically null-terminate the buffer, so we
+  //           // create space for null
+  // {
+  //   // adding null at end of buffer so that it is easy to work with string
+  //   buffer[bytesRead] = '\0';
+  //   extract += buffer;
+  // }
+
+  // if (bytesRead == -1) {
+  //   perror("there was a error in reading tracker_info.txt");
+  //   exit(1);
+  // }
+
+  // close(fd);
+  // // cout<<extract<<endl;
+
+  // // extracting IP and port of tracker
+  // istringstream iss(extract);
+  // string line;
+
+  // while (getline(iss, line)) {
+  //   if (line.empty())
+  //     continue;
+  //   size_t delim = line.find(':');
+  //   if (delim == string::npos)
+  //     continue;
+  //   string ip = line.substr(0, delim);
+  //   string port = line.substr(delim + 1);
+  //   trackerList.emplace_back(ip, port);
+  // }
+
+  // if (trackerList.empty()) {
+  //   cerr << "No valid trackers found in tracker_info.txt" << endl;
+  //   exit(1);
+  // }
+
+  // // Seed the random number generator
+  // srand(time(NULL));
+  // myTrackerIndex = rand() % trackerList.size();
+
+  // if (clientPort == "6001") {
+  //   myTrackerIndex = 0;
+  // }
+
+  // else if (clientPort == "6002") {
+  //   myTrackerIndex = 1;
+  // }
+
+  // else if (clientPort == "6003") {
+  //   myTrackerIndex = 2;
+  // }
+
+  // string trackerIP = trackerList[myTrackerIndex].first;
+  // string trackerPort = trackerList[myTrackerIndex].second;
+  // trackerPort = stoi(trackerPort);
+
+  string trackerIP;
+  int trackerPort;
+
+  // string loadBalancerIP = "127.0.0.1"; // change to your actual LB IP
+  // int loadBalancerPort = 9000;         // change to your actual LB port
+
+  cout<<"just before GetBestTrackerFromLoadBalancer"<<endl;
+  if (!GetBestTrackerFromLoadBalancer(loadBalancerIP, loadBalancerPort,
+                                      trackerIP, trackerPort)) {
+    cerr << "❌ Unable to get tracker from load balancer. Exiting." << endl;
     exit(1);
   }
 
-  // reading its content into buffer
-  char buffer[BUFFERSIZE];
-  ssize_t bytesRead;
-  string extract = "";
-  while ((bytesRead = read(fd, buffer, sizeof(buffer) - 1)) >
-         0) // read() doesn't automatically null-terminate the buffer, so we
-            // create space for null
-  {
-    // adding null at end of buffer so that it is easy to work with string
-    buffer[bytesRead] = '\0';
-    extract += buffer;
-  }
-
-  if (bytesRead == -1) {
-    perror("there was a error in reading tracker_info.txt");
-    exit(1);
-  }
-
-  close(fd);
-  // cout<<extract<<endl;
-
-  // extracting IP and port of tracker
-  istringstream iss(extract);
-  string line;
-
-  while (getline(iss, line)) {
-    if (line.empty())
-      continue;
-    size_t delim = line.find(':');
-    if (delim == string::npos)
-      continue;
-    string ip = line.substr(0, delim);
-    string port = line.substr(delim + 1);
-    trackerList.emplace_back(ip, port);
-  }
-
-  if (trackerList.empty()) {
-    cerr << "No valid trackers found in tracker_info.txt" << endl;
-    exit(1);
-  }
-
-  // Seed the random number generator
-  srand(time(NULL));
-  myTrackerIndex = rand() % trackerList.size();
-
-  if (clientPort == "6001") {
-    myTrackerIndex = 0;
-  }
-
-  else if (clientPort == "6002") {
-    myTrackerIndex = 1;
-  }
-
-  else if (clientPort == "6003") {
-    myTrackerIndex = 2;
-  }
-
-  string trackerIP = trackerList[myTrackerIndex].first;
-  string trackerPort = trackerList[myTrackerIndex].second;
+  // cout << "🛰️ Connecting to best tracker: " << trackerIP << ":" << trackerPort
+  //      << endl;
 
   // cout<<IPAddress<<endl;
   // cout<<portNumber<<endl;
@@ -248,7 +271,8 @@ int main(int argc, char *argv[]) {
   }
 
   // Define the server's address structure
-  int trackerPortNumber = atoi(trackerPort.c_str());
+  int trackerPortNumber = trackerPort;
+  // int trackerPortNumber = 9000;
 
   sockaddr_in serverAddress;
   serverAddress.sin_family = AF_INET;
@@ -269,7 +293,7 @@ int main(int argc, char *argv[]) {
   cout << "Client is listening for request on " << cLientIP << ":" << clientPort
        << endl;
   trackerAlive = true;
-  thread hb(StartHeartbeatMonitor, clientSocket, trackerIP, trackerPort);
+  thread hb(StartHeartbeatMonitor, clientSocket, trackerIP, to_string(trackerPort));
   hb.detach();
   // Let it run in background
   // if (clientPort == "6001") {
@@ -2252,13 +2276,13 @@ void ChunkWorkerThread() {
 // Send heartbeat (PING) and wait for PONG
 void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
                            const string &currentTrackerPort) {
-cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
-         << currentTrackerPort << endl;
+// cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
+        //  << currentTrackerPort << endl;
   while (true) {
     // Send PING
     string pingMsg = "PING";
-    cout << "\nSending PING to tracker " << currentTrackerIP << ":"
-         << currentTrackerPort << endl;
+    // cout << "\nSending PING to tracker " << currentTrackerIP << ":"
+        //  << currentTrackerPort << endl;
     send(clientSocket, pingMsg.c_str(), pingMsg.size(), 0);
 
     // Wait for response with timeout using future
@@ -2272,8 +2296,8 @@ cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
       if (bytes > 0) {
         string response(buffer, bytes);
         if (response == "PONG") {
-          cout << "\n✅ PONG received from tracker " << currentTrackerIP << ":"
-               << currentTrackerPort << endl;
+          // cout << "\n✅ PONG received from tracker " << currentTrackerIP << ":"
+          //      << currentTrackerPort << endl;
           // All good
           this_thread::sleep_for(chrono::seconds(10));
           continue;
@@ -2332,4 +2356,61 @@ bool ReconnectToAnotherTracker(int &clientSocket, int failedTrackerIndex) {
   }
 
   return false;
+}
+
+// 🔁 [Multi-Tracker Load Balancing] Get best tracker from Load Balancer
+bool GetBestTrackerFromLoadBalancer(const string &lbIP, int lbPort,
+                                    string &trackerIP, int &trackerPort) {
+
+  cout<<"entering GetBestTrackerFromLoadBalancer"<<endl;
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    cerr << "❌ Failed to create socket to load balancer" << endl;
+    return false;
+  }
+
+  sockaddr_in servAddr;
+  servAddr.sin_family = AF_INET;
+  servAddr.sin_port = htons(lbPort);
+
+  if (inet_pton(AF_INET, lbIP.c_str(), &servAddr.sin_addr) <= 0) {
+    cerr << "❌ Invalid load balancer IP" << endl;
+    close(sock);
+    return false;
+  }
+
+  if (connect(sock, (struct sockaddr *)&servAddr, sizeof(servAddr)) < 0) {
+    cerr << "❌ Failed to connect to load balancer" << endl;
+    close(sock);
+    return false;
+  }
+
+  cout<<"connected to load balancer"<<endl;
+
+  string request = "GET_TRACKER";
+  send(sock, request.c_str(), request.size(), 0);
+  cout<<"sent GET_TRACKER request to load balancer"<<endl;
+
+  char buffer[BUFFERSIZE];
+  ssize_t bytesRead = recv(sock, buffer, sizeof(buffer), 0);
+  close(sock);
+
+  if (bytesRead <= 0) {
+    cerr << "❌ No response from load balancer" << endl;
+    return false;
+  }
+  cout<<"bytesRead: "<<bytesRead<<endl;
+
+  string response(buffer, bytesRead);
+  if (response == "NO_TRACKERS\n") {
+    cerr << "⚠️ Load balancer reported no active trackers" << endl;
+    return false;
+  }
+
+  cout<<"response: "<<response<<endl;
+
+  istringstream iss(response);
+  iss >> trackerIP >> trackerPort;
+  cout<<"trackerIP: "<<trackerIP<<", trackerPort: "<<trackerPort<<endl;
+  return true;
 }
