@@ -129,10 +129,8 @@ void ChunkWorkerThread();
 void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
                            const string &currentTrackerPort);
 
-bool ReconnectToAnotherTracker(int &clientSocket, int failedTrackerIndex);
-bool GetBestTrackerFromLoadBalancer(const string &lbIP, int lbPort,
-                                    string &trackerIP,
-                                    int &trackerPort);
+bool ReconnectToAnotherTracker(int &clientSocket);
+bool GetBestTrackerFromLoadBalancer(string &trackerIP, int &trackerPort);
 int main(int argc, char *argv[]) {
   // checking if correct no of arguments were passed
   if (argc != 2) {
@@ -240,8 +238,7 @@ int main(int argc, char *argv[]) {
   // int loadBalancerPort = 9000;         // change to your actual LB port
 
   cout<<"just before GetBestTrackerFromLoadBalancer"<<endl;
-  if (!GetBestTrackerFromLoadBalancer(loadBalancerIP, loadBalancerPort,
-                                      trackerIP, trackerPort)) {
+  if (!GetBestTrackerFromLoadBalancer(trackerIP, trackerPort)) {
     cerr << "❌ Unable to get tracker from load balancer. Exiting." << endl;
     exit(1);
   }
@@ -466,7 +463,7 @@ int main(int argc, char *argv[]) {
     // 🔽 Put this BEFORE sending to tracker
     if (!trackerAlive) {
       cout << "Trying to reconnect to another tracker..." << endl;
-      if (!ReconnectToAnotherTracker(clientSocket, myTrackerIndex)) {
+      if (!ReconnectToAnotherTracker(clientSocket)) {
         cerr << "❌ All trackers are down. Please restart the system manually."
              << endl;
         exit(1);
@@ -2276,8 +2273,8 @@ void ChunkWorkerThread() {
 // Send heartbeat (PING) and wait for PONG
 void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
                            const string &currentTrackerPort) {
-// cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
-        //  << currentTrackerPort << endl;
+cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
+         << currentTrackerPort << endl;
   while (true) {
     // Send PING
     string pingMsg = "PING";
@@ -2313,54 +2310,72 @@ void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
   }
   cout << "Heartbeat monitor stopped for tracker " << currentTrackerIP << ":"
        << currentTrackerPort << endl;
+
+  // Step 1: Notify Load Balancer to REMOVE the crasher tracker
+  int lbSock = socket(AF_INET, SOCK_STREAM, 0);
+  sockaddr_in lbAddr;
+  lbAddr.sin_family = AF_INET;
+  lbAddr.sin_port = htons(loadBalancerPort); // set this globally
+  inet_pton(AF_INET, loadBalancerIP.c_str(),
+            &lbAddr.sin_addr); // set globally
+
+  if (connect(lbSock, (sockaddr *)&lbAddr, sizeof(lbAddr)) == 0) {
+    string msg =
+        "REMOVE " + currentTrackerIP + " " + currentTrackerPort;
+    send(lbSock, msg.c_str(), msg.size(), 0);
+    cout << "📉 Sent REMOVE for dead tracker to Load Balancer\n";
+  } else {
+    cerr << "❌ Failed to connect to Load Balancer for REMOVE\n";
+  }
+
+    // ✅ Wait for ACK or REMOVED
+    char buffer[1024];
+    ssize_t bytesRead = recv(lbSock, buffer, sizeof(buffer), 0);
+    if (bytesRead > 0) {
+      string response(buffer, bytesRead);
+      cout << "📩 Load Balancer response: " << response;
+    } else {
+      cerr << "⚠️ No response from Load Balancer after sending update\n";
+    }
+
+    close(lbSock);
+
+
   // cout << "Enter commands:> ";
 }
 
-bool ReconnectToAnotherTracker(int &clientSocket, int failedTrackerIndex) {
+bool ReconnectToAnotherTracker(int &clientSocket) {
   cout << "Reconnecting to another tracker..." << endl;
-  vector<int> otherTrackers;
-  for (int i = 0; i < trackerList.size(); ++i) {
-    if (i != failedTrackerIndex)
-      otherTrackers.push_back(i);
-  }
 
-  if (otherTrackers.empty())
+  string trackerIP;
+  int trackerPort;
+  if (!GetBestTrackerFromLoadBalancer(trackerIP, trackerPort))
     return false;
 
-  random_shuffle(otherTrackers.begin(), otherTrackers.end());
-
-  for (int i : otherTrackers) {
-    const auto &[ip, port] = trackerList[i]; // get IP and port
-    int newSocket = socket(AF_INET, SOCK_STREAM, 0);
+  int newSocket = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in serv_addr;
     serv_addr.sin_family = AF_INET;
-    int trackerPortNumber = atoi(port.c_str());
-    serv_addr.sin_port = htons(trackerPortNumber);
-    inet_pton(AF_INET, ip.c_str(), &serv_addr.sin_addr);
+    serv_addr.sin_port = htons(trackerPort);
+    inet_pton(AF_INET, trackerIP.c_str(), &serv_addr.sin_addr);
 
     if (connect(newSocket, (sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) {
       close(clientSocket); // close old socket
       clientSocket = newSocket;
-      myTrackerIndex = i;
       trackerAlive = true;
 
       // Restart heartbeat
-      thread t(StartHeartbeatMonitor, clientSocket, ip, port);
+      thread t(StartHeartbeatMonitor, clientSocket, trackerIP, to_string(trackerPort));
       t.detach();
 
-      cout << "✅ Reconnected to tracker: " << ip << ":" << port << endl;
+      cout << "✅ Reconnected to tracker: " << trackerIP << ":" << trackerPort << endl;
       return true;
     }
 
     close(newSocket);
-  }
-
-  return false;
+    return false;
 }
-
 // 🔁 [Multi-Tracker Load Balancing] Get best tracker from Load Balancer
-bool GetBestTrackerFromLoadBalancer(const string &lbIP, int lbPort,
-                                    string &trackerIP, int &trackerPort) {
+bool GetBestTrackerFromLoadBalancer(string &trackerIP, int &trackerPort) {
 
   cout<<"entering GetBestTrackerFromLoadBalancer"<<endl;
   int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -2371,9 +2386,9 @@ bool GetBestTrackerFromLoadBalancer(const string &lbIP, int lbPort,
 
   sockaddr_in servAddr;
   servAddr.sin_family = AF_INET;
-  servAddr.sin_port = htons(lbPort);
+  servAddr.sin_port = htons(loadBalancerPort);
 
-  if (inet_pton(AF_INET, lbIP.c_str(), &servAddr.sin_addr) <= 0) {
+  if (inet_pton(AF_INET, loadBalancerIP.c_str(), &servAddr.sin_addr) <= 0) {
     cerr << "❌ Invalid load balancer IP" << endl;
     close(sock);
     return false;
