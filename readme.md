@@ -198,10 +198,56 @@ The system consists of three main components: the **Load Balancer**, the **Track
   ```bash
   sudo apt-get install libssl-dev
   ```
+* **.env configuration support**
+  The project uses a `.env` file to store runtime configuration (e.g., buffer size, ports, timeouts).
+  Copy the provided `.env.example` to `.env`:
+
+  ```bash
+  cp .env.example .env
+  ```
+
+  Then adjust values in `.env` as needed for your setup.
 
 ---
 
-### 📦 Step 1: Build All Components
+### ⚙️ Step 1: Environment Configuration
+
+**Edit `.env`** to define system behavior without recompiling. Example:
+
+```ini
+# Load Balancer Config
+LOAD_BALANCER_IP=127.0.0.1
+LOAD_BALANCER_PORT=9000
+
+# File Transfer
+BUFFERSIZE=524288
+MAX_CONNECTIONS=50
+THREAD_POOL_SIZE=5
+MAX_RETRIES=3
+
+# Timeouts (ms)
+RECV_TIMEOUT_MS=5000
+SEND_TIMEOUT_MS=5000
+
+# Scoring Algorithm
+SCORE_ALPHA=0.20
+SCORE_BETA=0.80
+THRESHOLD_K=1.25
+
+# Tracker Config
+HEARTBEAT_INTERVAL_SEC=10
+HEARTBEAT_TIMEOUT_SEC=5
+TRACKER_RECV_TIMEOUT_MS=5000
+TRACKER_SEND_TIMEOUT_MS=5000
+```
+
+> **Note:** The `.env` file is **ignored by Git** to prevent local config leaks. Only `.env.example` is committed.
+
+---
+
+---
+
+### 📦 Step 2: Build All Components
 
 Use the provided Makefile to build everything at once:
 
@@ -213,15 +259,7 @@ make
 
 ---
 
-### 🚦 Step 2: Start Load Balancer
-
-Make sure `tracker_info.txt` contains all tracker entries with there IP and Port:
-
-```txt
-127.0.0.1:6960
-127.0.0.1:6961
-127.0.0.1:6962
-```
+### 🚦 Step 3: Start Load Balancer
 
 Then run the load balancer:
 
@@ -233,11 +271,23 @@ It listens on port `9000` by default and selects the best tracker based on load 
 
 ---
 
-### 🧠 Step 3: Start Multiple Trackers
+### 🧠 Step 4: Start Multiple Trackers
 
-Each tracker reads the same `tracker_info.txt` and identifies its own index from the line number (starting at 1).
+Ensure `tracker_info.txt` contains all tracker entries with their IP and Port:
 
-Start each tracker in a separate terminal:
+```txt
+127.0.0.1:6960
+127.0.0.1:6961
+127.0.0.1:6962
+```
+
+Each tracker:
+
+* Reads the shared `tracker_info.txt`.
+* Detects its own identity based on the **line number** in the file (starting at 1).
+* Automatically connects and syncs state with other trackers.
+
+Run each tracker in a separate terminal:
 
 ```bash
 ./build/tracker tracker_info.txt <index>
@@ -250,12 +300,11 @@ Example:
 ./build/tracker tracker_info.txt 2
 ./build/tracker tracker_info.txt 3
 ```
-Run the above command in different terminal to start multiple trackers Trackers will automatically connect and sync with each other. 
-You can add more tracker entry in `tracker_info.txt` to start more trackers. 
+You can add more tracker entry in `tracker_info.txt` to start more tracker instances. 
 
 ---
 
-### 👤 Step 4: Start Client(s)
+### 👤 Step 5: Start Client(s)
 
 Run multiple clients in different terminals. Each will connect to the load balancer to get the best tracker IP:
 
@@ -272,6 +321,11 @@ Example:
 ```
 Run each of the above command in different terminal and it will start 3 clients with ports `8081`, `8082`, `8083`.
 NOTE: Make sure to use different ports for each client.
+
+The client will:
+
+* Query the load balancer for the best tracker.
+* Connect to that tracker for all file-sharing commands.
 
 Each client listens on its own `<PORT>` for incoming P2P chunk transfers.
 You can change ther `<IP>` and `<PORT>` to any valid IP and PORT.
