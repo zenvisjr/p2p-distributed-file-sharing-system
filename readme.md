@@ -10,10 +10,6 @@
 ![Sockets](https://img.shields.io/badge/Socket-TCP%2FIP-orange?style=flat-square)
 [![License](https://img.shields.io/github/license/zenvisjr/p2p-distributed-file-sharing-system?style=flat-square)](./LICENSE)
 
-
----
-
-
 ---
 
 ### 📚 Table of Contents
