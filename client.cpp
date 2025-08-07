@@ -119,9 +119,8 @@ string DeserializePeerStats(const PeerStats &peer);
 // 📦 [Piece Selection] Download chunks from a specific peer
 void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
                         const vector<string> &chunkHashes,
-                        const string &destinationPath, const string &fileName,
-                        mutex &writeLock, vector<bool> &isChunkDone,
-                        char *fileMemory);
+                        const string &fileName, mutex &writeLock,
+                        vector<bool> &isChunkDone, char *fileMemory);
 
 void AssignChunksToPeers(int totalChunks);
 int PrepareFileForWriting(const string &filePath, size_t totalSize);
@@ -142,7 +141,7 @@ int main(int argc, char *argv[]) {
   // extracting IP and port number of client passed as 2nd argument
   string socketInfo = argv[1];
   string cLientIP, clientPort;
-  for (int i = 0; i < socketInfo.size(); i++) {
+  for (int i = 0; i < int(socketInfo.size()); i++) {
     if (socketInfo[i] == ':') {
       clientPort = socketInfo.substr(i + 1);
       break;
@@ -268,12 +267,13 @@ int main(int argc, char *argv[]) {
   attempt = 0;
   success = false;
 
-  while (attempt < maxRetries) {
+      while (attempt < maxRetries) {
     // Create a new socket on client side
     int domain = AF_INET;
     int type = SOCK_STREAM;
     int protocol = 0;
-    int clientSocket = socket(domain, type, protocol);
+    clientSocket = socket(domain, type, protocol);
+    // cout<<"client socket: "<<clientSocket<<endl;
     if (clientSocket == -1) {
       perror("unable to create a socket at client side");
       exit(1);
@@ -506,6 +506,7 @@ int main(int argc, char *argv[]) {
     }
 
     vector<string> arguments = ExtractArguments(command);
+    // cout<<"tracker socket: "<<clientSocket<<endl;
     // cout << "🔍 Main thread: About to call checkAppendSendRecieve" << endl;
     checkAppendSendRecieve(arguments, command, cLientIP, clientPort,
                            clientSocket);
@@ -518,8 +519,17 @@ int main(int argc, char *argv[]) {
 
 void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
                             string port, int clientSocket) {
-  int sizeOfArgs = arg.size();
+  // int sizeOfArgs = arg.size();
   char bufferRecv[BUFFERSIZE];
+  // int type;
+  // socklen_t len = sizeof(type);
+  // if (getsockopt(clientSocket, SOL_SOCKET, SO_TYPE, &type, &len) == -1) {
+  //   perror("getsockopt at entry to checkAppendSendRecieve");
+  // } else {
+  //   std::cerr << "[DEBUG] FD at entry to checkAppendSendRecieve = "
+  //             << clientSocket << ", SO_TYPE=" << type
+  //             << " (1 means SOCK_STREAM)" << std::endl;
+  // }
 
   if (arg[0] == "create_user") {
     if (arg.size() != 3) {
@@ -544,6 +554,10 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     // }
     if (send(clientSocket, command.c_str(), command.length(), 0) == -1) {
       perror("there was a error in sending command to server");
+
+      // if (getsockopt(clientSocket, SOL_SOCKET, SO_TYPE, &type, &len) == -1) {
+      //   perror("getsockopt before send");
+      // }
       return;
     }
 
@@ -849,7 +863,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 
     // command = arg[0];
     cout << "file metadata prepared for upload: " << command << endl;
-    size_t len = command.size();
+    int len = command.size();
     string header = "@LARGE@";
     send(clientSocket, header.c_str(), header.size(), 0);
     send(clientSocket, &len, sizeof(len), 0);
@@ -1029,7 +1043,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     // ✅ Extract peers
 
     // vector<pair<string, int>> peers;
-    for (int i = 4 + noOfChunks; i < tokens.size(); i += 5) {
+    for (int i = 4 + noOfChunks; i < int(tokens.size()); i += 5) {
       string peerID = tokens[i];
       int peerPort = stoi(tokens[i + 1]);
       float score = stof(tokens[i + 2]);
@@ -1052,7 +1066,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 
     // ✅ Prepare chunk assignments
     int totalChunks = noOfChunks;
-    int peerCount = peers.size();
+    // int peerCount = peers.size();
     // vector<string> receivedChunkHashes(totalChunks); // Stores per-chunk
     // SHA1s
 
@@ -1150,9 +1164,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     for (const auto &[peerKey, chunkIndices] : peerToChunks) {
       PeerStats &peer = peerStatsMap[peerKey];
       threads.emplace_back(DownloadChunkRange, ref(peer), chunkIndices,
-                           ref(chunkHashes), ref(destinationPath),
-                           ref(fileName), ref(writeLock), ref(isChunkDone),
-                           fileMemory);
+                           ref(chunkHashes), ref(fileName), ref(writeLock),
+                           ref(isChunkDone), fileMemory);
     }
 
     for (auto &t : threads) {
@@ -1173,7 +1186,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 
     // checking if all chunks are received
     bool allChunksReceived = true;
-    for (int i = 0; i < isChunkDone.size(); ++i) {
+    for (int i = 0; i < int(isChunkDone.size()); ++i) {
       if (!isChunkDone[i]) {
         cerr << "❌ Chunk " << i << " was not downloaded successfully.\n";
         allChunksReceived = false;
@@ -1243,7 +1256,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 
       // 🧠 Step 3: Send the combinedStats payload
       int totalSent = 0;
-      while (totalSent < len) {
+      while (totalSent < int(len)) {
         int sent = send(clientSocket, combinedStats.c_str() + totalSent,
                         len - totalSent, 0);
         if (sent <= 0) {
@@ -1314,9 +1327,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 // 📦 [Piece Selection]
 void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
                         const vector<string> &chunkHashes,
-                        const string &destinationPath, const string &fileName,
-                        mutex &writeLock, vector<bool> &isChunkDone,
-                        char *fileMemory) {
+                        const string &fileName, mutex &writeLock,
+                        vector<bool> &isChunkDone, char *fileMemory) {
 
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
@@ -1541,7 +1553,7 @@ void RecieveFile(int clientSocket, string destinationPath, string fileName,
     // ✅ Hash verification
     string localHash = calculateSHA1Hash(buffer, bytesReceived);
     cout << "Local hash for chunk " << chunkIndex << ": " << localHash << endl;
-    if (chunkIndex >= chunkHashes.size()) {
+    if (chunkIndex >= int(chunkHashes.size())) {
       cerr << "❌ More chunks received than expected!" << endl;
       break;
     }
@@ -1982,7 +1994,7 @@ string calculateSHA1Hash(unsigned char *buffer, int size) {
 vector<unsigned char> hexStringToByteArray(string &hexString) {
   vector<unsigned char> byteArray;
 
-  for (int i = 0; i < hexString.length(); i += 2) {
+  for (int i = 0; i < int(hexString.length()); i += 2) {
     string byteString = hexString.substr(i, 2);
     char byte = (char)strtol(byteString.c_str(), NULL, 16);
     byteArray.push_back(byte);
@@ -2308,30 +2320,31 @@ void ChunkWorkerThread() {
 // Send heartbeat (PING) and wait for PONG
 void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
                            const string &currentTrackerPort) {
-  cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
-       << currentTrackerPort << endl;
-  this_thread::sleep_for(chrono::seconds(1));
+  // cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
+      //  << currentTrackerPort << endl;
+  // this_thread::sleep_for(chrono::seconds(1));
 
   while (true) {
+    // cout<<"h1"<<endl;
     // Send PING
     string pingMsg = "PING";
     // cout << "\nSending PING to tracker " << currentTrackerIP << ":"
     //  << currentTrackerPort << endl;
     send(clientSocket, pingMsg.c_str(), pingMsg.size(), 0);
-
+    // cout << "h2" << endl;
     // Wait for response with timeout using future
     char buffer[1024] = {0};
     future<ssize_t> responseFuture = async(launch::async, [&]() {
       return recv(clientSocket, buffer, sizeof(buffer), 0);
     });
-
+    // cout << "h3" << endl;
     if (responseFuture.wait_for(chrono::seconds(5)) == future_status::ready) {
       ssize_t bytes = responseFuture.get();
       if (bytes > 0) {
         string response(buffer, bytes);
         if (response == "PONG") {
           // cout << "\n✅ PONG received from tracker " << currentTrackerIP <<
-              //  ":" << currentTrackerPort << endl;
+          //  ":" << currentTrackerPort << endl;
           // All good
           this_thread::sleep_for(chrono::seconds(10));
           continue;

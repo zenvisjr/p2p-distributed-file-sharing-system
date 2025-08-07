@@ -141,10 +141,10 @@ void LeaveGroup(string groupID, User *&currentThreadUser, int clientSocket, int 
 void ListAllGroups(User *&currentThreadUser, int clientSocket, int check);
 void ListPendingRequest(string groupID, User *&currentThreadUser, int clientSocket, int check);
 void AcceptRequest(string groupID, string userID, User *&currentThreadUser, int clientSocket, int check);
-void UploadFile(string filePath, string groupID, int fsize, string fname, int fchunks, string fhash, User *&currentThreadUser, int clientSocket, int check);
+void UploadFile(string groupID, int fsize, string fname, int fchunks, string fhash, User *&currentThreadUser, int clientSocket, int check);
 void ListSharableFiles(string groupID, User *&currentThreadUser, int clientSocket, int check);
 void StopShare(string groupID, string fileName, User *&currentThreadUser, int clientSocket, int check);
-void DownloadFile(string groupID, string fileName, string destinationPath, User *&currentThreadUser, int clientSocket, int check);
+void DownloadFile(string groupID, string fileName, User *&currentThreadUser, int clientSocket, int check);
 void ShowDownloadStatus(User *&currentThreadUser, int clientSocket, int check);
 void QuitTracker(User *currentThreadUser, int clientSocket, int check);
 void updatePeerStatsFromClient(const string &ip, int port, float score,
@@ -717,7 +717,7 @@ void AcceptRequest(string groupID, string userID, User *&currentThreadUser, int 
     }
 }
 
-void UploadFile(string filePath, string groupID, int fsize, string fname, int fchunks, string fhash, vector<string> &chunkHashes, User *&currentThreadUser, int clientSocket, int check)
+void UploadFile(string groupID, int fsize, string fname, int fchunks, string fhash, vector<string> &chunkHashes, User *&currentThreadUser, int clientSocket, int check)
 {
     lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
     string response;
@@ -771,13 +771,13 @@ void UploadFile(string filePath, string groupID, int fsize, string fname, int fc
         // if file already exist then check if u have uploaded that file
         if (file != currentGroup->sharedFiles.end())
         {
-            bool check = false;
+            // bool check = false;
             for (auto peer : file->second->peersHavingFile)
             {
 
                 if (peer->userID == currentThreadUser->userID)
                 {
-                    check = true;
+                    // check = true;
                     cout << "You have already shared this file" << endl;
                     response = fname + " is already shared by u";
                     send(clientSocket, response.c_str(), response.size(), 0);
@@ -946,7 +946,7 @@ void StopShare(string groupID, string fname, User *&currentThreadUser, int clien
     }
 }
 
-void DownloadFile(string groupID, string fname, string destinationPath, User *&currentThreadUser, int clientSocket, int check)
+void DownloadFile(string groupID, string fname, User *&currentThreadUser, int clientSocket, int check)
 {
     lock_guard<mutex> lock(groupMutex); // 🔒 [Phase 3]
     string response;
@@ -997,6 +997,7 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
             if (index.second->fileName == fname)
             {
                 check = true;
+                
                 fhash = index.first;
 
                 FileMetadata *meta = index.second;
@@ -1116,7 +1117,7 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
 
                 // Step 4: Extract stats in groups of 6
                 bool downloadComplete = false;
-                for (int i = 0; i + 5 < tokens.size(); i += 6) {
+                for (int i = 0; i + 5 < int(tokens.size()); i += 6) {
                   string command = tokens[i];
                   if (command != "update_peer_stats") {
                     cerr << "❌ Invalid peer stats command received: "
@@ -1157,9 +1158,9 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                 //   string receivedDownloadStatus(statusBuf, statusBytes);
                 //   if (receivedDownloadStatus.find(
                 //           "DownloadCompleteSuccessfully") != string::npos) {
-                // if (downloadComplete)
-                // {
-                    // lock_guard<mutex> lock(downloadsMutex); // 🔒 [Phase 3]
+                if (downloadComplete)
+                {
+                    lock_guard<mutex> lock(downloadsMutex); // 🔒 [Phase 3]
                     for (auto s : downloads) {
                       if (s->fileName == fname) {
                         s->status = 1;
@@ -1173,7 +1174,7 @@ void DownloadFile(string groupID, string fname, string destinationPath, User *&c
                     cout << "✅ Tracker updated download status to complete "
                             "for file: "
                          << fname << endl;
-                // }
+                }
                 // update tracker that I have the file too
                 for (auto file : currentGroup->sharedFiles)
                 {
@@ -1353,9 +1354,8 @@ void clientHandler(int clientSocket)
             // Now handle the command normally
             command = ExtractArguments(payload);
             // ... (handle as usual)
-        }
-        else
-        {
+        } else {
+          cout<<"small message"<<endl;
             // Default case: normal small command
             char buffer[BUFFERSIZE];
             int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
@@ -1387,7 +1387,13 @@ void clientHandler(int clientSocket)
         // string command = "create_user ayush 1q2w3e";
         string response;
 
-        if (command[0] == "create_user")
+        if (command[0] == "PING") {
+          //   cout<<"\nPING received from client "<<endl;
+          string response = "PONG";
+          //   cout << "\nPONG sent to client "<< endl;
+          send(clientSocket, response.c_str(), response.size(), 0);
+          continue;
+        } else if (command[0] == "create_user")
         {
             // if(command.size() != 3)
             // {
@@ -1588,13 +1594,13 @@ void clientHandler(int clientSocket)
 
             // 🚀 [Phase 4] Extract chunk hashes from remaining command elements
             vector<string> chunkHashes;
-            for (int i = 7; i < command.size(); i++)
+            for (int i = 7; i < int(command.size()); i++)
             {
                 // cout << "each chunk hash: " << command[i] << endl;
                 chunkHashes.push_back(command[i]);
             }
 
-            UploadFile(fpath, gid, fsize, fname, fchunks, fhash, chunkHashes, currentThreadUser, clientSocket, checkNoOfUser);
+            UploadFile(gid, fsize, fname, fchunks, fhash, chunkHashes, currentThreadUser, clientSocket, checkNoOfUser);
         }
         else if (command[0] == "list_files")
         {
@@ -1617,8 +1623,7 @@ void clientHandler(int clientSocket)
             string gid = command[1];
             // string fpath = command[2];
             string fname = command[2];
-            string dpath = command[3];
-            DownloadFile(gid, fname, dpath, currentThreadUser, clientSocket, checkNoOfUser);
+            DownloadFile(gid, fname, currentThreadUser, clientSocket, checkNoOfUser);
         }
         else if (command[0] == "show_downloads")
         {
@@ -1634,19 +1639,13 @@ void clientHandler(int clientSocket)
             // trackerRunning = false;
             // exit(0);
             // break;
-        } else if (command[0] == "PING") {
-        //   cout<<"\nPING received from client "<<endl;
-          string response = "PONG";
-        //   cout << "\nPONG sent to client "<< endl;
-          send(clientSocket, response.c_str(), response.size(), 0);
-          continue;
+        } 
+        else
+        {
+            cout<<"wrong command"<<endl;
+            string response = "The command u entered does not exists";
+            send(clientSocket, response.c_str(), response.size(), 0);
         }
-        // else
-        // {
-        //     cout<<"wrong command"<<endl;
-        //     string response = "The command u entered does not exists";
-        //     send(clientSocket, response.c_str(), response.size(), 0);
-        // }
 
         // Close the client socket
         //  close(clientSocket);
@@ -1685,7 +1684,7 @@ int main(int argc, char *argv[])
     file.close();
 
     // ❌ Sanity check
-    if (myTrackerIndex < 0 || myTrackerIndex > trackerList.size()) {
+    if (myTrackerIndex < 0 || myTrackerIndex > int(trackerList.size())) {
       cerr << "Invalid tracker index provided." << endl;
       exit(1);
     }
@@ -1923,7 +1922,7 @@ void syncListener(int syncPort) {
 
 // 🔄 [Sync] Send sync message to all other trackers
 void sendSyncToPeers(const string &message, int selfIndex) {
-  for (int i = 0; i < trackerList.size(); ++i) {
+  for (int i = 0; i < int(trackerList.size()); ++i) {
     if (i == selfIndex-1)
       continue; // Skip self
 
@@ -2175,7 +2174,7 @@ void handleSyncConnection(int syncSocket) {
     User *uploader = userMap[uploaderID];
 
     vector<string> chunkHashes;
-    for (int i = 7; i < tokens.size(); ++i) {
+    for (int i = 7; i < int(tokens.size()); ++i) {
       chunkHashes.push_back(tokens[i]);
     }
 
