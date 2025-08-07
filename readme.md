@@ -2,9 +2,16 @@
 
 **Robust. Efficient. Fault Tolerant. A group-based peer-to-peer file sharing system with centralized tracking, chunk-level hashing, and smart piece selection logic. Built using C++ with multithreading, sockets, and custom protocols.**
 
+
 ![Last Commit](https://img.shields.io/github/last-commit/zenvisjr/p2p-distributed-file-sharing-system?color=purple&style=flat-square)
-![C++](https://img.shields.io/badge/C++-17-blue?style=flat-square)
-![License](https://img.shields.io/github/license/zenvisjr/p2p-distributed-file-sharing-system?style=flat-square)
+![C++](https://img.shields.io/badge/C%2B%2B-17-blue?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey?style=flat-square)
+![Multithreading](https://img.shields.io/badge/Multithreaded-Yes-brightgreen?style=flat-square)
+![Sockets](https://img.shields.io/badge/Socket-TCP%2FIP-orange?style=flat-square)
+[![License](https://img.shields.io/github/license/zenvisjr/p2p-distributed-file-sharing-system?style=flat-square)](./LICENSE)
+
+
+---
 
 
 ---
