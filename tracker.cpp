@@ -1,3 +1,4 @@
+#include "env_utils.h"
 #include <iostream>
 #include <random>
 #include <thread>
@@ -17,21 +18,24 @@
 #include <fstream>
 #include <sstream>
 
-std::mutex userMutex;      // 🔒 [Phase 3]
-std::mutex groupMutex;     // 🔒 [Phase 3]
-std::mutex downloadsMutex; // 🔒 [Phase 3]
-std::mutex globalPeerStatsMutex; // 🔒 [Phase 3]
-
 using namespace std;
 
-#define BUFFERSIZE 512*1024 // 512 KB buffer size for file transfer
-#define MAX_CONNECTION 50
-string loadBalancerIP = "127.0.0.1";
-int loadBalancerPort = 9000;
+string loadBalancerIP = envStr("LOAD_BALANCER_IP", "127.0.0.1");
+int loadBalancerPort = envInt("LOAD_BALANCER_PORT", 9000);
+int BUFFERSIZE = envInt("BUFFERSIZE", 512 * 1024);
+int MAX_CONNECTION = envInt("MAX_CONNECTIONS", 50);
+int TRACKER_RCV_TO = envInt("TRACKER_RECV_TIMEOUT_MS", 5000);
+int TRACKER_SND_TO = envInt("TRACKER_SEND_TIMEOUT_MS", 5000);
+
+
+mutex userMutex;      // 🔒 [Phase 3]
+mutex groupMutex;     // 🔒 [Phase 3]
+mutex downloadsMutex; // 🔒 [Phase 3]
+mutex globalPeerStatsMutex; // 🔒 [Phase 3]
+
 bool trackerRunning = true;
 int myTrackerIndex;
 vector<pair<string, int>> trackerList;
-
 string currentUSerIP,
 currentUserPort;
 

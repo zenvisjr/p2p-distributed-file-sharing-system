@@ -254,7 +254,7 @@ void preloadTrackersFromFile(const string &filename) {
        << endl;
 }
 
-int main(int argc, char *argv[]) {
+int main() {
   // if (argc < 2) {
   //   cerr << "Usage: " << argv[0] << " tracker_info.txt" << endl;
   //   return 1;
