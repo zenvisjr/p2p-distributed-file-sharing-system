@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdio> //for snprintf
 #include <cstring>
 #include <fcntl.h> // For open()
@@ -22,6 +23,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
 float K = 1.25f;        // 📌 Global multiplier for fair threshold
 // best distribution values
@@ -29,7 +32,9 @@ float alpha = .20;              // Score weight
 float betaa = .80;              // Load penalty weight
 std::atomic<bool> trackerAlive; // Tracker health check
 int myTrackerIndex;
-int maxRetries = 3;
+
+const int MAX_RETRIES = 3;
+
 
 using namespace std;
 #define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
@@ -238,20 +243,20 @@ int main(int argc, char *argv[]) {
   string trackerIP;
   int trackerPort;
 
-  while (attempt < maxRetries) {
+  while (attempt < MAX_RETRIES) {
     if (GetBestTrackerFromLoadBalancer(trackerIP, trackerPort)) {
       success = true;
       break;
     } else {
       cerr << "⚠️ Failed to get tracker from LB. Retrying (" << (attempt + 1)
-           << "/" << maxRetries << ")..." << endl;
+           << "/" << MAX_RETRIES << ")..." << endl;
       this_thread::sleep_for(chrono::seconds(1));
       attempt++;
     }
   }
 
   if (!success) {
-    cerr << "❌ Unable to get tracker from Load Balancer after " << maxRetries
+    cerr << "❌ Unable to get tracker from Load Balancer after " << MAX_RETRIES
          << " attempts. Exiting." << endl;
     exit(1);
   }
@@ -267,7 +272,7 @@ int main(int argc, char *argv[]) {
   attempt = 0;
   success = false;
 
-      while (attempt < maxRetries) {
+  while (attempt < MAX_RETRIES) {
     // Create a new socket on client side
     int domain = AF_INET;
     int type = SOCK_STREAM;
@@ -303,7 +308,7 @@ int main(int argc, char *argv[]) {
                             sizeof(serverAddress));
     if (connectFD == -1) {
       cerr << "⚠️ Failed to connect to tracker " << trackerIP << ":"
-           << trackerPort << " (Attempt " << (attempt + 1) << "/" << maxRetries
+           << trackerPort << " (Attempt " << (attempt + 1) << "/" << MAX_RETRIES
            << ")" << endl;
       close(clientSocket);
       this_thread::sleep_for(chrono::seconds(1));
@@ -316,7 +321,7 @@ int main(int argc, char *argv[]) {
     }
   }
   if (!success) {
-    cerr << "❌ Unable to connect to tracker after " << maxRetries
+    cerr << "❌ Unable to connect to tracker after " << MAX_RETRIES
          << " attempts. Exiting." << endl;
     exit(1);
   }
@@ -324,9 +329,9 @@ int main(int argc, char *argv[]) {
   // cout << "Client is listening for request on " << cLientIP << ":"
   //      << clientPort << endl;
   trackerAlive = true;
-  thread hb(StartHeartbeatMonitor, clientSocket, trackerIP,
-            to_string(trackerPort));
-  hb.detach();
+  // thread hb(StartHeartbeatMonitor, clientSocket, trackerIP,
+  //           to_string(trackerPort));
+  // hb.detach();
   // Let it run in background
   // if (clientPort == "6001") {
   //   cout << "Client is running on port 6001" << endl;
@@ -863,7 +868,7 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 
     // command = arg[0];
     cout << "file metadata prepared for upload: " << command << endl;
-    int len = command.size();
+    std::size_t len = command.size();
     string header = "@LARGE@";
     send(clientSocket, header.c_str(), header.size(), 0);
     send(clientSocket, &len, sizeof(len), 0);
@@ -1345,6 +1350,12 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
     exit(1);
   }
 
+  // ⏳ Add a 5s timeout for recv to avoid hangs
+  timeval tv;
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
   sockaddr_in serverAddr;
   serverAddr.sin_family = AF_INET;
   serverAddr.sin_port = htons(peer.port);
@@ -1361,66 +1372,85 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
        << peer.port << " " << peer.ip << endl;
 
   for (int chunkIndex : chunkIndices) {
-    auto start =
-        chrono::high_resolution_clock::now(); // ✅ Start time per chunk
 
-    string request =
-        "send_chunk " + fileName + " " + to_string(chunkIndex) + "\n";
-    send(sock, request.c_str(), request.size(), 0);
+    bool success = false;
 
-    int chunkLenNetwork;
-    int lenBytes = recv(sock, &chunkLenNetwork, sizeof(chunkLenNetwork), 0);
-    if (lenBytes != sizeof(chunkLenNetwork)) {
-      cerr << "❌ Failed to receive chunk length for chunk " << chunkIndex
-           << endl;
-      continue;
+    for (int attempt = 1; attempt <= MAX_RETRIES && !success; attempt++) {
+      auto start =
+          chrono::high_resolution_clock::now(); // ✅ Start time per chunk
+
+      string request =
+          "send_chunk " + fileName + " " + to_string(chunkIndex) + "\n";
+      int sendBytes = send(sock, request.c_str(), request.size(), 0);
+      if (sendBytes != request.size()) {
+        cerr << "❌ Failed to send chunk request for chunk " << chunkIndex
+             << endl;
+        continue; //retry
+      }
+
+      int chunkLenNetwork;
+      int lenBytes = recv(sock, &chunkLenNetwork, sizeof(chunkLenNetwork), 0);
+      if (lenBytes != sizeof(chunkLenNetwork)) {
+        cerr << "❌ Failed to receive chunk length for chunk " << chunkIndex
+             << endl;
+        continue; //retry
+      }
+      int chunkLen = ntohl(chunkLenNetwork);
+
+      string chunkData;
+      int received = 0;
+      while (received < chunkLen) {
+        char buffer[BUFFERSIZE];
+        int bytes = recv(sock, buffer, BUFFERSIZE, 0);
+        if (bytes <= 0)
+          break;
+        chunkData.append(buffer, bytes);
+        received += bytes;
+      }
+
+      if (received != chunkLen) {
+        cerr << "❌ Incomplete chunk " << chunkIndex << " from " << peer.ip
+             << endl;
+        continue; //retry
+      }
+
+      string localHash = calculateSHA1Hash((unsigned char *)chunkData.c_str(),
+                                           chunkData.size());
+      if (localHash != chunkHashes[chunkIndex]) {
+        cerr << "❌ Hash mismatch for chunk " << chunkIndex << " from "
+             << peer.ip << endl;
+        continue; //retry
+      }
+
+      // receivedChunkHashes[chunkIndex] = localHash;
+
+      {
+        lock_guard<mutex> lock(writeLock);
+        // downloadedChunks[chunkIndex] = chunkData;
+        isChunkDone[chunkIndex] = true;
+        cout << "✔️ Chunk " << chunkIndex << " received from " << peer.ip << ":"
+             << peer.port << endl;
+      }
+
+      // ✅ All checks passed → Write to memory-mapped file at correct offset
+      size_t offset = chunkIndex * BUFFERSIZE;
+      memcpy(fileMemory + offset, chunkData.data(), chunkData.size());
+
+      auto end = chrono::high_resolution_clock::now();
+      chrono::duration<double> elapsed = end - start;
+      peer.totalDownloadTime += elapsed.count();
+      peer.chunksServed++;
+
+      // ✅ Set success flag to true as we successfully downloaded the file
+      success = true;
     }
-    int chunkLen = ntohl(chunkLenNetwork);
-
-    string chunkData;
-    int received = 0;
-    while (received < chunkLen) {
-      char buffer[BUFFERSIZE];
-      int bytes = recv(sock, buffer, BUFFERSIZE, 0);
-      if (bytes <= 0)
-        break;
-      chunkData.append(buffer, bytes);
-      received += bytes;
+    if (!success) {
+      cerr << "🛑 Failed to download chunk " << chunkIndex << " from "
+           << peer.ip << " after " << MAX_RETRIES << " attempts\n";
     }
-
-    if (received != chunkLen) {
-      cerr << "❌ Incomplete chunk " << chunkIndex << " from " << peer.ip
-           << endl;
-      continue;
-    }
-
-    string localHash =
-        calculateSHA1Hash((unsigned char *)chunkData.c_str(), chunkData.size());
-    if (localHash != chunkHashes[chunkIndex]) {
-      cerr << "❌ Hash mismatch for chunk " << chunkIndex << " from " << peer.ip
-           << endl;
-      continue;
-    }
-
-    // receivedChunkHashes[chunkIndex] = localHash;
-
-    {
-      lock_guard<mutex> lock(writeLock);
-      // downloadedChunks[chunkIndex] = chunkData;
-      isChunkDone[chunkIndex] = true;
-      cout << "✔️ Chunk " << chunkIndex << " received from " << peer.ip << ":"
-           << peer.port << endl;
-    }
-
-    // ✅ All checks passed → Write to memory-mapped file at correct offset
-    size_t offset = chunkIndex * BUFFERSIZE;
-    memcpy(fileMemory + offset, chunkData.data(), chunkData.size());
-
-    auto end = chrono::high_resolution_clock::now();
-    chrono::duration<double> elapsed = end - start;
-    peer.totalDownloadTime += elapsed.count();
-    peer.chunksServed++;
   }
+
+  // ✅ Calculate final score after all chunks are downloaded
   peer.score = (peer.totalDownloadTime > 0)
                    ? peer.chunksServed / peer.totalDownloadTime
                    : 1.0;
@@ -2321,7 +2351,7 @@ void ChunkWorkerThread() {
 void StartHeartbeatMonitor(int clientSocket, const string &currentTrackerIP,
                            const string &currentTrackerPort) {
   // cout << "Heartbeat monitor started for tracker " << currentTrackerIP << ":"
-      //  << currentTrackerPort << endl;
+  //  << currentTrackerPort << endl;
   // this_thread::sleep_for(chrono::seconds(1));
 
   while (true) {
