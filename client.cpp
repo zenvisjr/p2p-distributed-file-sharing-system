@@ -24,7 +24,6 @@
 #include <unordered_set>
 #include <vector>
 
-
 std::mutex globalMutex; // 🌐 [Phase 3] Protect shared maps
 float K = 1.25f;        // 📌 Global multiplier for fair threshold
 // best distribution values
@@ -34,7 +33,6 @@ std::atomic<bool> trackerAlive; // Tracker health check
 int myTrackerIndex;
 
 const int MAX_RETRIES = 3;
-
 
 using namespace std;
 #define BUFFERSIZE 512 * 1024 // 512 KB buffer size for file transfer
@@ -124,8 +122,8 @@ string DeserializePeerStats(const PeerStats &peer);
 // 📦 [Piece Selection] Download chunks from a specific peer
 void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
                         const vector<string> &chunkHashes,
-                        const string &fileName, mutex &writeLock,
-                        vector<bool> &isChunkDone, char *fileMemory);
+                        const string &fileName, mutex &failedLock,
+                        vector<bool> &failedChunks, char *fileMemory);
 
 void AssignChunksToPeers(int totalChunks);
 int PrepareFileForWriting(const string &filePath, size_t totalSize);
@@ -1147,8 +1145,9 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     }
 
     // vector<string> downloadedChunks(totalChunks);
-    vector<bool> isChunkDone(totalChunks, false);
-    mutex writeLock;
+    // vector<bool> isChunkDone(totalChunks, false);
+    vector<bool> failedChunks;
+    mutex failedLock;
     vector<thread> threads;
 
     // for (const auto &entry : assignedChunks) {
@@ -1169,8 +1168,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     for (const auto &[peerKey, chunkIndices] : peerToChunks) {
       PeerStats &peer = peerStatsMap[peerKey];
       threads.emplace_back(DownloadChunkRange, ref(peer), chunkIndices,
-                           ref(chunkHashes), ref(fileName), ref(writeLock),
-                           ref(isChunkDone), fileMemory);
+                           ref(chunkHashes), ref(fileName), ref(failedLock),
+                           ref(failedChunks), fileMemory);
     }
 
     for (auto &t : threads) {
@@ -1190,14 +1189,14 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
     // out.close();
 
     // checking if all chunks are received
-    bool allChunksReceived = true;
-    for (int i = 0; i < int(isChunkDone.size()); ++i) {
-      if (!isChunkDone[i]) {
+    // bool allChunksReceived = true;
+    for (int i = 0; i < int(failedChunks.size()); ++i) {
+      if (!failedChunks[i]) {
         cerr << "❌ Chunk " << i << " was not downloaded successfully.\n";
-        allChunksReceived = false;
+        // allChunksReceived = false;
       }
     }
-    if (!allChunksReceived) {
+    if (failedChunks.size() > 0) {
       cerr << "🚫 Download failed. Incomplete file. Aborting.\n";
       munmap(fileMemory, fileSize);
       close(destinationFileFd);
@@ -1332,8 +1331,8 @@ void checkAppendSendRecieve(vector<string> &arg, string &command, string ip,
 // 📦 [Piece Selection]
 void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
                         const vector<string> &chunkHashes,
-                        const string &fileName, mutex &writeLock,
-                        vector<bool> &isChunkDone, char *fileMemory) {
+                        const string &fileName, mutex &failedLock,
+                        vector<bool> &failedChunks, char *fileMemory) {
 
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
@@ -1385,7 +1384,7 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
       if (sendBytes != request.size()) {
         cerr << "❌ Failed to send chunk request for chunk " << chunkIndex
              << endl;
-        continue; //retry
+        continue; // retry
       }
 
       int chunkLenNetwork;
@@ -1393,7 +1392,7 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
       if (lenBytes != sizeof(chunkLenNetwork)) {
         cerr << "❌ Failed to receive chunk length for chunk " << chunkIndex
              << endl;
-        continue; //retry
+        continue; // retry
       }
       int chunkLen = ntohl(chunkLenNetwork);
 
@@ -1411,7 +1410,7 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
       if (received != chunkLen) {
         cerr << "❌ Incomplete chunk " << chunkIndex << " from " << peer.ip
              << endl;
-        continue; //retry
+        continue; // retry
       }
 
       string localHash = calculateSHA1Hash((unsigned char *)chunkData.c_str(),
@@ -1419,18 +1418,18 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
       if (localHash != chunkHashes[chunkIndex]) {
         cerr << "❌ Hash mismatch for chunk " << chunkIndex << " from "
              << peer.ip << endl;
-        continue; //retry
+        continue; // retry
       }
 
       // receivedChunkHashes[chunkIndex] = localHash;
 
-      {
-        lock_guard<mutex> lock(writeLock);
-        // downloadedChunks[chunkIndex] = chunkData;
-        isChunkDone[chunkIndex] = true;
-        cout << "✔️ Chunk " << chunkIndex << " received from " << peer.ip << ":"
-             << peer.port << endl;
-      }
+      // {
+      // lock_guard<mutex> lock(writeLock);
+      // downloadedChunks[chunkIndex] = chunkData;
+      // isChunkDone[chunkIndex] = true;
+      cout << "✔️ Chunk " << chunkIndex << " received from " << peer.ip << ":"
+           << peer.port << endl;
+      // }
 
       // ✅ All checks passed → Write to memory-mapped file at correct offset
       size_t offset = chunkIndex * BUFFERSIZE;
@@ -1447,6 +1446,8 @@ void DownloadChunkRange(PeerStats &peer, const vector<int> &chunkIndices,
     if (!success) {
       cerr << "🛑 Failed to download chunk " << chunkIndex << " from "
            << peer.ip << " after " << MAX_RETRIES << " attempts\n";
+      lock_guard<mutex> lk(failedLock);
+      failedChunks.push_back(chunkIndex); // record for a second pass
     }
   }
 
