@@ -6,3 +6,4 @@ hi.pdf
 
 # Ignore all executables in the build folder (any file without extension)
 build/*
+extra/*

@@ -255,10 +255,10 @@ void preloadTrackersFromFile(const string &filename) {
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 2) {
-    cerr << "Usage: " << argv[0] << " tracker_info.txt" << endl;
-    return 1;
-  }
+  // if (argc < 2) {
+  //   cerr << "Usage: " << argv[0] << " tracker_info.txt" << endl;
+  //   return 1;
+  // }
 
   // preloadTrackersFromFile(argv[1]);
   startLoadBalancer();
