@@ -10,32 +10,51 @@
 
 ---
 
+The issue you're facing — clicking on Table of Contents links not jumping to the correct section — is due to **GitHub’s anchor naming conventions**.
+
+GitHub **ignores emojis** and special characters in headings when generating anchor links. It also:
+
+* Converts uppercase to lowercase
+* Replaces spaces with dashes `-`
+* Removes emojis and punctuation
+
+---
+
+### ✅ Fix: Correct Anchors in TOC
+
+Here is the **corrected Table of Contents** (GitHub-compatible):
+
+---
+
 ### 📚 Table of Contents
 
 1. [🧩 Overview](#overview)
 2. [🚀 Features](#features)
+
    * [Core Functionality](#core-functionality)
    * [Advanced Features](#advanced-features)
 3. [🧱 System Architecture](#system-architecture)
-   * [🧩 Components](#components)
-   * [🔄 Data & Control Flow](#data--control-flow)
+
+   * [Components](#components)
+   * [Data & Control Flow](#data--control-flow)
 4. [🛠️ Build and Run Instructions](#build-and-run-instructions)
 5. [🧾 Command Reference](#command-reference)
-    * [👤 User Management](#user-management)
-    * [👥 Group Management](#group-management)
-    * [📁 File Management](#file-management)
-    * [🛑 System Control](#system-control)
+
+   * [User Management](#user-management)
+   * [Group Management](#group-management)
+   * [File Management](#file-management)
+   * [System Control](#system-control)
 6. [📤 File Upload Workflow](#file-upload-workflow)
+7. [📥 Download File Workflow](#download-file-workflow)
 8. [📊 Load Balanced Peer-Quality-Aware Piece Selection Algorithm](#load-balanced-peer-quality-aware-piece-selection-algorithm)
 9. [📊 Testing – Chunk Assignment Analysis](#testing--chunk-assignment-analysis)
-7. [📥 Download File Workflow](#download-file-workflow)
-
-10. [🚀 Optimization: Streaming Large Files with `mmap`](#optimization-streaming-large-files-with-mmap)
+10. [🚀 Optimization: Streaming Large Files with mmap](#optimization-streaming-large-files-with-mmap)
 11. [🌐 Multi-Tracker Sync Mechanism](#multi-tracker-sync-mechanism)
 12. [❤️ Heartbeat System – Tracker Liveness Monitoring & Failover](#heartbeat-system--tracker-liveness-monitoring--failover)
 13. [⚖️ Load Balancer](#load-balancer)
 14. [🤝 Contributing](#contributing)
 15. [👨‍💻 Author](#author)
+
 
 ---
 
